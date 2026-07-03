@@ -738,3 +738,41 @@ assumed clean from each task's own isolated report.
 - **Known minor gap, not fixed**: if a service's connection-string row is
   expanded on the dashboard and that service then stops, the row doesn't
   auto-collapse. Cosmetic; flagged for an optional follow-up.
+
+---
+
+## Phase 2 — manual verification pass (all of 2.1-2.8, real click-through)
+
+Same approach as task 1.7: drove the real running app (`wails dev`) with
+Playwright against `http://localhost:34115`, not simulated.
+
+- **Multi-engine wizard**: checked PostgreSQL + Redis, named the profile,
+  clicked "Create & Start" once — both services came up under one
+  aggregate "Running" badge, each with its own row (engine, port, its own
+  "Copy connection string" and "Reset volume" buttons). Confirms the
+  "multi-service start/stop as a unit" requirement visually, not just via
+  the Go-side integration test.
+- **Reset volume**: clicked "Reset volume" on the Postgres row. Confirm
+  dialog text (verified verbatim):
+  *"Reset volume for PostgreSQL (localhost:5432)? This PERMANENTLY
+  DELETES all data in this service. It will be stopped, its Docker
+  volume erased, and a fresh empty one created on next start. This
+  cannot be undone. Other services in this profile are not affected and
+  stay running."* — settled in ~2.1s. The Redis row never left
+  "Running" throughout, and the profile's aggregate status stayed
+  "Running" — sibling-isolation confirmed visually, matching the
+  integration test's concurrent-polling proof.
+- **Status dashboard**: navigated via the new "Status" sidebar item —
+  showed a live table with both services (`postgres`/PostgreSQL and
+  `redis`/Redis), correct ports (5432/6379), real CPU%/RAM readings
+  (e.g. "29.1 MiB / 6.72 GiB (0.4%)"), no manual refresh needed.
+- **Stop**: clicked "Stop" once on the multi-engine profile — both
+  services stopped as a unit within ~1.05s.
+- All Docker resources (2 containers, 1 network, 2 volumes) and the test
+  profile row were removed afterward — confirmed via
+  `docker ps -a`/`network ls`/`volume ls` and the same throwaway
+  `internal/storage`-based cleanup program pattern used for task 1.7.
+
+Phase 2 (tasks 2.1-2.8) is confirmed working end-to-end, not just
+unit/integration tested in isolation. `tasks.md`'s Phase 2 checkboxes are
+all checked.
