@@ -91,6 +91,36 @@ export namespace main {
 
 export namespace storage {
 	
+	export class Connection {
+	    ID: number;
+	    Name: string;
+	    Engine: string;
+	    Host: string;
+	    Port: number;
+	    Username?: string;
+	    PasswordEncrypted?: string;
+	    Database?: string;
+	    ParamsJSON: string;
+	    LastUsedAt?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Connection(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ID = source["ID"];
+	        this.Name = source["Name"];
+	        this.Engine = source["Engine"];
+	        this.Host = source["Host"];
+	        this.Port = source["Port"];
+	        this.Username = source["Username"];
+	        this.PasswordEncrypted = source["PasswordEncrypted"];
+	        this.Database = source["Database"];
+	        this.ParamsJSON = source["ParamsJSON"];
+	        this.LastUsedAt = source["LastUsedAt"];
+	    }
+	}
 	export class Profile {
 	    ID: number;
 	    Name: string;

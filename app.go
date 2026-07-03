@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -1179,4 +1180,174 @@ func (a *App) TestConnection(fields ConnectionFormFields) error {
 		return fmt.Errorf("test connection: %w", err)
 	}
 	return nil
+}
+
+// stringPtrOrNil returns nil for an empty string, or a pointer to s
+// otherwise — the boundary that turns a connection form's empty text field
+// into a NULL column, matching Service's own nullable-field convention
+// (models.go) rather than storing an empty string in a Connection's
+// Username/PasswordEncrypted/Database.
+func stringPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// stringOrEmpty dereferences an optional *string, returning "" for nil — the
+// inverse of stringPtrOrNil, used when rehydrating a stored Connection back
+// into ConnectionFormFields.
+func stringOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// paramsToJSON marshals a connection form's Params into the JSON string
+// storage.Connection.ParamsJSON expects (tasks.md 3.5), defaulting a nil or
+// empty map to "{}" rather than storing an empty string, which is not valid
+// JSON and would fail to round-trip through paramsFromJSON.
+func paramsToJSON(params map[string]string) (string, error) {
+	if len(params) == 0 {
+		return "{}", nil
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		return "", fmt.Errorf("encode connection params: %w", err)
+	}
+	return string(data), nil
+}
+
+// paramsFromJSON reverses paramsToJSON, decoding a stored Connection's
+// ParamsJSON back into map[string]string.
+func paramsFromJSON(raw string) (map[string]string, error) {
+	if raw == "" {
+		return map[string]string{}, nil
+	}
+	var params map[string]string
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		return nil, fmt.Errorf("decode connection params: %w", err)
+	}
+	return params, nil
+}
+
+// connectionFormFieldsFromStored converts a saved storage.Connection back
+// into the same ConnectionFormFields shape the connection form UI already
+// works with (task 3.4), so loading a saved connection populates the form
+// exactly like ParseConnectionURL does for a freshly pasted string.
+func connectionFormFieldsFromStored(c storage.Connection) (ConnectionFormFields, error) {
+	params, err := paramsFromJSON(c.ParamsJSON)
+	if err != nil {
+		return ConnectionFormFields{}, fmt.Errorf("saved connection %d: %w", c.ID, err)
+	}
+
+	return ConnectionFormFields{
+		Engine:   c.Engine,
+		Host:     c.Host,
+		Port:     c.Port,
+		Username: stringOrEmpty(c.Username),
+		Password: stringOrEmpty(c.PasswordEncrypted),
+		Database: stringOrEmpty(c.Database),
+		Params:   params,
+	}, nil
+}
+
+// ListConnections returns every saved DB Client connection, ordered by name
+// (tasks.md 3.5, spec.md §4.1). PasswordEncrypted is returned as-is —
+// plaintext-in-practice today, same standing gap TestConnection/SaveConnection
+// already carry (see docs/STATE.md); this method doesn't make that gap
+// worse, it also doesn't fix it.
+func (a *App) ListConnections() ([]storage.Connection, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+
+	connections, err := storage.ListConnections(db)
+	if err != nil {
+		return nil, fmt.Errorf("list connections: %w", err)
+	}
+	if connections == nil {
+		connections = []storage.Connection{}
+	}
+	return connections, nil
+}
+
+// SaveConnection persists fields under name as a new saved connection
+// (tasks.md 3.5, spec.md §4.1), reusing task 3.4's ConnectionFormFields
+// rather than a separate request shape. It re-runs
+// validateConnectionFormFields's host/port sanity check, but deliberately
+// does NOT itself perform a live connectivity test: Test Connection (3.4)
+// and Save are two independent, separately-triggered actions in the UI —
+// typically test-then-save, but saving an untested connection is allowed.
+func (a *App) SaveConnection(fields ConnectionFormFields, name string) (*storage.Connection, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("save connection: name is required")
+	}
+	if err := validateConnectionFormFields(fields); err != nil {
+		return nil, fmt.Errorf("save connection: %w", err)
+	}
+
+	paramsJSON, err := paramsToJSON(fields.Params)
+	if err != nil {
+		return nil, fmt.Errorf("save connection %q: %w", name, err)
+	}
+
+	created, err := storage.CreateConnection(db, &storage.Connection{
+		Name:              name,
+		Engine:            fields.Engine,
+		Host:              fields.Host,
+		Port:              fields.Port,
+		Username:          stringPtrOrNil(fields.Username),
+		PasswordEncrypted: stringPtrOrNil(fields.Password),
+		Database:          stringPtrOrNil(fields.Database),
+		ParamsJSON:        paramsJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("save connection %q: %w", name, err)
+	}
+	return created, nil
+}
+
+// DeleteConnection permanently removes a saved connection (tasks.md 3.5).
+func (a *App) DeleteConnection(id int64) error {
+	db, err := a.requireDB()
+	if err != nil {
+		return err
+	}
+	if err := storage.DeleteConnection(db, id); err != nil {
+		return fmt.Errorf("delete connection %d: %w", id, err)
+	}
+	return nil
+}
+
+// ConnectUsingSavedConnection loads a saved connection back into
+// ConnectionFormFields shape — the same shape ParseConnectionURL produces —
+// so the frontend can populate the connection form from a saved row with one
+// click, then Test/edit it exactly like a freshly pasted URL (tasks.md 3.5).
+// This is also the single trigger point that bumps LastUsedAt: a saved
+// connection counts as "used" the moment the user asks to load/connect
+// through it, not merely when it appears in the list, and not tied to a
+// second, redundant TestConnection call the UI didn't ask for.
+func (a *App) ConnectUsingSavedConnection(id int64) (*ConnectionFormFields, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := storage.TouchConnectionLastUsed(db, id)
+	if err != nil {
+		return nil, fmt.Errorf("connect using saved connection %d: %w", id, err)
+	}
+
+	fields, err := connectionFormFieldsFromStored(*conn)
+	if err != nil {
+		return nil, fmt.Errorf("connect using saved connection %d: %w", id, err)
+	}
+	return &fields, nil
 }

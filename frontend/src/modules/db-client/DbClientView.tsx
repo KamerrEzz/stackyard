@@ -1,6 +1,13 @@
-import {useCallback, useState} from 'react'
-import {ParseConnectionURL, TestConnection} from '../../../wailsjs/go/main/App'
-import type {main} from '../../../wailsjs/go/models'
+import {useCallback, useEffect, useState} from 'react'
+import {
+    ConnectUsingSavedConnection,
+    DeleteConnection,
+    ListConnections,
+    ParseConnectionURL,
+    SaveConnection,
+    TestConnection,
+} from '../../../wailsjs/go/main/App'
+import type {main, storage} from '../../../wailsjs/go/models'
 
 type Engine = 'postgres' | 'mysql' | 'mongodb' | 'redis'
 
@@ -57,6 +64,12 @@ function DbClientView() {
     const [testState, setTestState] = useState<TestState>('idle')
     const [testMessage, setTestMessage] = useState<string | null>(null)
 
+    const [savedConnections, setSavedConnections] = useState<storage.Connection[]>([])
+    const [savedConnectionsError, setSavedConnectionsError] = useState<string | null>(null)
+    const [saveName, setSaveName] = useState('')
+    const [saveState, setSaveState] = useState<TestState>('idle')
+    const [saveMessage, setSaveMessage] = useState<string | null>(null)
+
     const applyParsedFields = useCallback((fields: main.ConnectionFormFields) => {
         setEngine(fields.Engine as Engine)
         setHost(fields.Host)
@@ -97,6 +110,76 @@ function DbClientView() {
     const handleRemoveParamRow = useCallback((index: number) => {
         setParamRows((prev) => prev.filter((_, i) => i !== index))
     }, [])
+
+    const refreshSavedConnections = useCallback(async () => {
+        try {
+            const connections = await ListConnections()
+            setSavedConnectionsError(null)
+            setSavedConnections(connections)
+        } catch (err) {
+            setSavedConnectionsError(String(err))
+        }
+    }, [])
+
+    useEffect(() => {
+        void refreshSavedConnections()
+    }, [refreshSavedConnections])
+
+    const handleSaveConnection = useCallback(async () => {
+        setSaveState('testing')
+        setSaveMessage(null)
+        try {
+            await SaveConnection(
+                {
+                    Engine: engine,
+                    Host: host,
+                    Port: Number(port) || 0,
+                    Username: username,
+                    Password: password,
+                    Database: database,
+                    Params: rowsToParams(paramRows),
+                },
+                saveName.trim(),
+            )
+            setSaveState('success')
+            setSaveMessage('Connection saved.')
+            setSaveName('')
+            await refreshSavedConnections()
+        } catch (err) {
+            setSaveState('error')
+            setSaveMessage(String(err))
+        }
+    }, [database, engine, host, paramRows, password, port, refreshSavedConnections, saveName, username])
+
+    const handleLoadConnection = useCallback(
+        async (id: number) => {
+            try {
+                const fields = await ConnectUsingSavedConnection(id)
+                setParseError(null)
+                setPasteValue('')
+                applyParsedFields(fields)
+                await refreshSavedConnections()
+            } catch (err) {
+                setSavedConnectionsError(String(err))
+            }
+        },
+        [applyParsedFields, refreshSavedConnections],
+    )
+
+    const handleDeleteConnection = useCallback(
+        async (id: number, name: string) => {
+            if (!window.confirm(`Delete saved connection "${name}"? This cannot be undone.`)) {
+                return
+            }
+            try {
+                await DeleteConnection(id)
+                await refreshSavedConnections()
+            } catch (err) {
+                setSavedConnectionsError(String(err))
+            }
+        },
+        [refreshSavedConnections],
+    )
 
     const handleTestConnection = useCallback(async () => {
         setTestState('testing')
@@ -283,6 +366,67 @@ function DbClientView() {
                     {testState === 'success' && <p className="text-sm text-emerald-400">{testMessage}</p>}
                     {testState === 'error' && <p className="text-sm text-red-400">{testMessage}</p>}
                 </div>
+
+                <div className="flex items-center gap-3 border-t border-ink-800 pt-3">
+                    <input
+                        type="text"
+                        value={saveName}
+                        onChange={(e) => setSaveName(e.target.value)}
+                        placeholder="Name this connection"
+                        className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                    />
+                    <button
+                        type="button"
+                        onClick={() => void handleSaveConnection()}
+                        disabled={saveState === 'testing' || host.trim().length === 0 || saveName.trim().length === 0}
+                        className="rounded border border-ink-700 px-4 py-2 text-sm font-medium text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        {saveState === 'testing' ? 'Saving…' : 'Save connection'}
+                    </button>
+                    {saveState === 'success' && <p className="text-sm text-emerald-400">{saveMessage}</p>}
+                    {saveState === 'error' && <p className="text-sm text-red-400">{saveMessage}</p>}
+                </div>
+            </div>
+
+            <div className="flex flex-col gap-3 rounded border border-ink-800 bg-ink-900/40 p-4">
+                <h2 className="text-xs uppercase tracking-widest text-ink-400">Saved connections</h2>
+                {savedConnectionsError && <p className="text-xs text-red-400">{savedConnectionsError}</p>}
+                {savedConnections.length === 0 && !savedConnectionsError && (
+                    <p className="text-sm text-ink-500">No saved connections yet.</p>
+                )}
+                {savedConnections.map((conn) => (
+                    <div
+                        key={conn.ID}
+                        className="flex items-center justify-between gap-3 rounded border border-ink-800 bg-ink-950/60 px-3 py-2"
+                    >
+                        <div className="flex flex-col">
+                            <span className="text-sm font-medium text-ink-100">{conn.Name}</span>
+                            <span className="font-mono text-xs text-ink-400">
+                                {conn.Engine}://{conn.Host}:{conn.Port}
+                                {conn.Database ? `/${conn.Database}` : ''}
+                            </span>
+                            {conn.LastUsedAt && (
+                                <span className="text-xs text-ink-500">Last used {conn.LastUsedAt}</span>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => void handleLoadConnection(conn.ID)}
+                                className="rounded border border-ink-700 px-3 py-1 text-xs text-ink-200 hover:border-brass-500 hover:text-brass-400"
+                            >
+                                Load
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => void handleDeleteConnection(conn.ID, conn.Name)}
+                                className="rounded border border-red-800 px-3 py-1 text-xs text-red-400 hover:border-red-500 hover:text-red-300"
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                ))}
             </div>
         </div>
     )

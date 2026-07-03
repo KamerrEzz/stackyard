@@ -10,8 +10,16 @@ export function CheckProfilePortConflict(arg1) {
   return window['go']['main']['App']['CheckProfilePortConflict'](arg1);
 }
 
+export function ConnectUsingSavedConnection(arg1) {
+  return window['go']['main']['App']['ConnectUsingSavedConnection'](arg1);
+}
+
 export function CreateProfile(arg1, arg2) {
   return window['go']['main']['App']['CreateProfile'](arg1, arg2);
+}
+
+export function DeleteConnection(arg1) {
+  return window['go']['main']['App']['DeleteConnection'](arg1);
 }
 
 export function DeleteProfile(arg1) {
@@ -28,6 +36,10 @@ export function GetConnectionString(arg1) {
 
 export function GetProfileStatus(arg1) {
   return window['go']['main']['App']['GetProfileStatus'](arg1);
+}
+
+export function ListConnections() {
+  return window['go']['main']['App']['ListConnections']();
 }
 
 export function ListProfiles() {
@@ -52,6 +64,10 @@ export function ResetServiceVolume(arg1) {
 
 export function RestartProfile(arg1) {
   return window['go']['main']['App']['RestartProfile'](arg1);
+}
+
+export function SaveConnection(arg1, arg2) {
+  return window['go']['main']['App']['SaveConnection'](arg1, arg2);
 }
 
 export function StartProfile(arg1) {

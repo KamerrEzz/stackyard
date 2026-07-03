@@ -1046,3 +1046,28 @@ Sources checked directly (not recalled from training): `pgx/v5@v5.10.0`
   resources and throwaway `cmd/` verification programs were removed
   afterward.
 - Next free integration-test ID: 999014+ (999012/999013 used here).
+
+### Saved connections list (3.5) — `internal/storage/connections.go` + `app.go`
+
+- `storage.Connection` struct kept unchanged (`ParamsJSON string`, matching
+  `Snippet.TagsJSON`'s existing raw-JSON-string convention) — the
+  `map[string]string ⟷ JSON` conversion happens only at the `App`
+  bound-method boundary (`paramsToJSON`/`paramsFromJSON`), not in storage.
+- **`ConnectUsingSavedConnection` is the single trigger point for
+  `LastUsedAt`** — bumped every time the UI "loads" a saved connection
+  into the form, not on every `TestConnection` call. `SaveConnection`
+  validates fields but does not force a live test first — Test and Save
+  are independent actions.
+- **Real bug caught and fixed**: `ListConnections()` returned Go's `nil`
+  for an empty slice, which JSON-encodes to `null` — crashed the
+  frontend on `savedConnections.length`. Fixed by normalizing to an
+  empty slice before returning (same pattern `ListProfiles`'s
+  `ProfileSummary` wrapping already used) — **any new bound method
+  returning a slice should default-empty it before returning, this is
+  now the second time this exact bug has appeared** (first in a
+  different form during Phase 2's `ProfileSummary` work).
+- Persistence-across-restart was verified for real: saved a connection,
+  killed the whole `wails`/`stackyard-dev` process tree, relaunched
+  `wails dev` fresh, confirmed the connection was still listed, then
+  Load/Delete both round-tripped correctly — not just asserted via a
+  unit test against a temp DB.

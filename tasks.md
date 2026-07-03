@@ -73,7 +73,7 @@ regardless of whether a task fully closes.
       form fields; unit-test malformed-string error messages.
 - [x] **3.4** Connection form UI: paste-URL autofill + manual fields +
       "Test connection" button.
-- [ ] **3.5** Saved connections list backed by the `connections` table;
+- [x] **3.5** Saved connections list backed by the `connections` table;
       persist across restarts.
 - [ ] **3.6** Integrate Monaco editor (`@monaco-editor/react`) with SQL
       syntax highlighting; wire "Run query" to `Engine.Query`.

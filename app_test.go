@@ -793,3 +793,336 @@ func TestApp_TestConnection_MongoAndRedisReturnNotYetSupported(t *testing.T) {
 		}
 	}
 }
+
+func TestStringPtrOrNil_EmptyStringBecomesNil(t *testing.T) {
+	if got := stringPtrOrNil(""); got != nil {
+		t.Errorf("stringPtrOrNil(\"\") = %v, want nil", got)
+	}
+}
+
+func TestStringPtrOrNil_NonEmptyStringBecomesPointer(t *testing.T) {
+	got := stringPtrOrNil("alice")
+	if got == nil || *got != "alice" {
+		t.Errorf("stringPtrOrNil(\"alice\") = %v, want a pointer to \"alice\"", got)
+	}
+}
+
+func TestStringOrEmpty_NilBecomesEmptyString(t *testing.T) {
+	if got := stringOrEmpty(nil); got != "" {
+		t.Errorf("stringOrEmpty(nil) = %q, want \"\"", got)
+	}
+}
+
+func TestStringOrEmpty_DereferencesNonNilPointer(t *testing.T) {
+	value := "bob"
+	if got := stringOrEmpty(&value); got != "bob" {
+		t.Errorf("stringOrEmpty(&\"bob\") = %q, want \"bob\"", got)
+	}
+}
+
+func TestParamsToJSON_EmptyMapDefaultsToEmptyObject(t *testing.T) {
+	got, err := paramsToJSON(nil)
+	if err != nil {
+		t.Fatalf("paramsToJSON(nil) failed: %v", err)
+	}
+	if got != "{}" {
+		t.Errorf("paramsToJSON(nil) = %q, want %q", got, "{}")
+	}
+}
+
+func TestParamsToJSON_EncodesNonEmptyMap(t *testing.T) {
+	got, err := paramsToJSON(map[string]string{"sslmode": "require"})
+	if err != nil {
+		t.Fatalf("paramsToJSON failed: %v", err)
+	}
+	if got != `{"sslmode":"require"}` {
+		t.Errorf("paramsToJSON() = %q, want %q", got, `{"sslmode":"require"}`)
+	}
+}
+
+func TestParamsFromJSON_EmptyStringDecodesToEmptyMap(t *testing.T) {
+	got, err := paramsFromJSON("")
+	if err != nil {
+		t.Fatalf("paramsFromJSON(\"\") failed: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("paramsFromJSON(\"\") = %v, want an empty map", got)
+	}
+}
+
+func TestParamsFromJSON_RoundTripsThroughParamsToJSON(t *testing.T) {
+	original := map[string]string{"sslmode": "require", "authSource": "admin"}
+
+	encoded, err := paramsToJSON(original)
+	if err != nil {
+		t.Fatalf("paramsToJSON failed: %v", err)
+	}
+	decoded, err := paramsFromJSON(encoded)
+	if err != nil {
+		t.Fatalf("paramsFromJSON failed: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Errorf("round trip = %v, want %v", decoded, original)
+	}
+}
+
+func TestParamsFromJSON_RejectsMalformedJSON(t *testing.T) {
+	if _, err := paramsFromJSON("not-json"); err == nil {
+		t.Error("paramsFromJSON(\"not-json\"): expected an error, got nil")
+	}
+}
+
+func TestConnectionFormFieldsFromStored_RehydratesAllFields(t *testing.T) {
+	username := "alice"
+	password := "s3cret"
+	database := "mydb"
+	conn := storage.Connection{
+		ID:                7,
+		Engine:            storage.EnginePostgres,
+		Host:              "db.example.com",
+		Port:              5432,
+		Username:          &username,
+		PasswordEncrypted: &password,
+		Database:          &database,
+		ParamsJSON:        `{"sslmode":"require"}`,
+	}
+
+	got, err := connectionFormFieldsFromStored(conn)
+	if err != nil {
+		t.Fatalf("connectionFormFieldsFromStored failed: %v", err)
+	}
+
+	want := ConnectionFormFields{
+		Engine:   storage.EnginePostgres,
+		Host:     "db.example.com",
+		Port:     5432,
+		Username: "alice",
+		Password: "s3cret",
+		Database: "mydb",
+		Params:   map[string]string{"sslmode": "require"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("connectionFormFieldsFromStored() = %+v, want %+v", got, want)
+	}
+}
+
+func TestConnectionFormFieldsFromStored_NilFieldsBecomeEmptyStrings(t *testing.T) {
+	conn := storage.Connection{ID: 1, Engine: storage.EngineRedis, Host: "localhost", Port: 6379}
+
+	got, err := connectionFormFieldsFromStored(conn)
+	if err != nil {
+		t.Fatalf("connectionFormFieldsFromStored failed: %v", err)
+	}
+	if got.Username != "" || got.Password != "" || got.Database != "" {
+		t.Errorf("expected nil Connection fields to become empty strings, got %+v", got)
+	}
+	if len(got.Params) != 0 {
+		t.Errorf("expected empty ParamsJSON to become an empty map, got %v", got.Params)
+	}
+}
+
+func TestConnectionFormFieldsFromStored_SurfacesMalformedParamsJSON(t *testing.T) {
+	conn := storage.Connection{ID: 3, Engine: storage.EnginePostgres, Host: "localhost", Port: 5432, ParamsJSON: "not-json"}
+
+	if _, err := connectionFormFieldsFromStored(conn); err == nil {
+		t.Error("connectionFormFieldsFromStored() with malformed ParamsJSON: expected an error, got nil")
+	}
+}
+
+func TestApp_ListConnections_RequiresDB(t *testing.T) {
+	a := &App{}
+
+	if _, err := a.ListConnections(); err == nil {
+		t.Error("ListConnections() with no db configured: expected an error, got nil")
+	}
+}
+
+func TestApp_ListConnections_ReturnsEmptySliceNotNilWhenNoneExist(t *testing.T) {
+	a := newTestApp(t)
+
+	connections, err := a.ListConnections()
+	if err != nil {
+		t.Fatalf("ListConnections failed: %v", err)
+	}
+	if connections == nil {
+		t.Fatal("ListConnections() = nil, want a non-nil empty slice (a nil slice JSON-encodes to null, which crashes frontend code doing savedConnections.length)")
+	}
+	if len(connections) != 0 {
+		t.Errorf("expected no connections, got %d", len(connections))
+	}
+}
+
+func TestApp_ListConnections_ReturnsSavedConnectionsOrderedByName(t *testing.T) {
+	a := newTestApp(t)
+
+	for _, name := range []string{"zebra-conn", "apple-conn"} {
+		if _, err := a.SaveConnection(ConnectionFormFields{Engine: storage.EnginePostgres, Host: "localhost", Port: 5432}, name); err != nil {
+			t.Fatalf("SaveConnection(%q) failed: %v", name, err)
+		}
+	}
+
+	connections, err := a.ListConnections()
+	if err != nil {
+		t.Fatalf("ListConnections failed: %v", err)
+	}
+	if len(connections) != 2 {
+		t.Fatalf("expected 2 saved connections, got %d", len(connections))
+	}
+	if connections[0].Name != "apple-conn" || connections[1].Name != "zebra-conn" {
+		t.Errorf("expected connections ordered by name, got %q then %q", connections[0].Name, connections[1].Name)
+	}
+}
+
+func TestApp_SaveConnection_RequiresDB(t *testing.T) {
+	a := &App{}
+
+	if _, err := a.SaveConnection(ConnectionFormFields{Engine: storage.EnginePostgres, Host: "localhost", Port: 5432}, "name"); err == nil {
+		t.Error("SaveConnection() with no db configured: expected an error, got nil")
+	}
+}
+
+func TestApp_SaveConnection_RequiresName(t *testing.T) {
+	a := newTestApp(t)
+
+	if _, err := a.SaveConnection(ConnectionFormFields{Engine: storage.EnginePostgres, Host: "localhost", Port: 5432}, "  "); err == nil {
+		t.Error("SaveConnection() with a blank name: expected an error, got nil")
+	}
+}
+
+func TestApp_SaveConnection_RejectsInvalidFields(t *testing.T) {
+	a := newTestApp(t)
+
+	if _, err := a.SaveConnection(ConnectionFormFields{Engine: storage.EnginePostgres, Host: "  "}, "bad-fields"); err == nil {
+		t.Error("SaveConnection() with a blank host: expected an error, got nil")
+	}
+}
+
+func TestApp_SaveConnection_PersistsAllFieldsAndDefaultsEmptyParams(t *testing.T) {
+	a := newTestApp(t)
+
+	saved, err := a.SaveConnection(ConnectionFormFields{
+		Engine:   storage.EnginePostgres,
+		Host:     "db.example.com",
+		Port:     5432,
+		Username: "alice",
+		Password: "s3cret",
+		Database: "mydb",
+		Params:   map[string]string{"sslmode": "require"},
+	}, "my-connection")
+	if err != nil {
+		t.Fatalf("SaveConnection failed: %v", err)
+	}
+
+	if saved.Name != "my-connection" {
+		t.Errorf("expected Name %q, got %q", "my-connection", saved.Name)
+	}
+	if saved.Username == nil || *saved.Username != "alice" {
+		t.Errorf("expected Username %q, got %v", "alice", saved.Username)
+	}
+	if saved.ParamsJSON != `{"sslmode":"require"}` {
+		t.Errorf("expected ParamsJSON %q, got %q", `{"sslmode":"require"}`, saved.ParamsJSON)
+	}
+
+	savedNoParams, err := a.SaveConnection(ConnectionFormFields{Engine: storage.EngineRedis, Host: "localhost", Port: 6379}, "no-params-connection")
+	if err != nil {
+		t.Fatalf("SaveConnection failed: %v", err)
+	}
+	if savedNoParams.ParamsJSON != "{}" {
+		t.Errorf("expected empty Params to default to %q, got %q", "{}", savedNoParams.ParamsJSON)
+	}
+	if savedNoParams.Username != nil || savedNoParams.PasswordEncrypted != nil || savedNoParams.Database != nil {
+		t.Errorf("expected empty Username/Password/Database to be stored as nil, got Username=%v PasswordEncrypted=%v Database=%v",
+			savedNoParams.Username, savedNoParams.PasswordEncrypted, savedNoParams.Database)
+	}
+}
+
+func TestApp_DeleteConnection_RequiresDB(t *testing.T) {
+	a := &App{}
+
+	if err := a.DeleteConnection(1); err == nil {
+		t.Error("DeleteConnection() with no db configured: expected an error, got nil")
+	}
+}
+
+func TestApp_DeleteConnection_RemovesSavedConnection(t *testing.T) {
+	a := newTestApp(t)
+
+	saved, err := a.SaveConnection(ConnectionFormFields{Engine: storage.EnginePostgres, Host: "localhost", Port: 5432}, "to-delete")
+	if err != nil {
+		t.Fatalf("SaveConnection failed: %v", err)
+	}
+
+	if err := a.DeleteConnection(saved.ID); err != nil {
+		t.Fatalf("DeleteConnection failed: %v", err)
+	}
+
+	connections, err := a.ListConnections()
+	if err != nil {
+		t.Fatalf("ListConnections failed: %v", err)
+	}
+	if len(connections) != 0 {
+		t.Errorf("expected the deleted connection to be gone, got %d remaining", len(connections))
+	}
+}
+
+func TestApp_ConnectUsingSavedConnection_RequiresDB(t *testing.T) {
+	a := &App{}
+
+	if _, err := a.ConnectUsingSavedConnection(1); err == nil {
+		t.Error("ConnectUsingSavedConnection() with no db configured: expected an error, got nil")
+	}
+}
+
+func TestApp_ConnectUsingSavedConnection_ReturnsFormFieldsAndBumpsLastUsedAt(t *testing.T) {
+	a := newTestApp(t)
+
+	saved, err := a.SaveConnection(ConnectionFormFields{
+		Engine:   storage.EngineMySQL,
+		Host:     "db.example.com",
+		Port:     3306,
+		Username: "root",
+		Password: "mysql",
+		Database: "appdb",
+		Params:   map[string]string{"parseTime": "true"},
+	}, "reload-me")
+	if err != nil {
+		t.Fatalf("SaveConnection failed: %v", err)
+	}
+	if saved.LastUsedAt != nil {
+		t.Fatal("expected a freshly saved connection to have a nil LastUsedAt")
+	}
+
+	fields, err := a.ConnectUsingSavedConnection(saved.ID)
+	if err != nil {
+		t.Fatalf("ConnectUsingSavedConnection failed: %v", err)
+	}
+
+	want := ConnectionFormFields{
+		Engine:   storage.EngineMySQL,
+		Host:     "db.example.com",
+		Port:     3306,
+		Username: "root",
+		Password: "mysql",
+		Database: "appdb",
+		Params:   map[string]string{"parseTime": "true"},
+	}
+	if !reflect.DeepEqual(*fields, want) {
+		t.Errorf("ConnectUsingSavedConnection() = %+v, want %+v", *fields, want)
+	}
+
+	connections, err := a.ListConnections()
+	if err != nil {
+		t.Fatalf("ListConnections failed: %v", err)
+	}
+	if len(connections) != 1 || connections[0].LastUsedAt == nil {
+		t.Fatalf("expected ConnectUsingSavedConnection to have set LastUsedAt, got %+v", connections)
+	}
+}
+
+func TestApp_ConnectUsingSavedConnection_NotFound(t *testing.T) {
+	a := newTestApp(t)
+
+	if _, err := a.ConnectUsingSavedConnection(999999); err == nil {
+		t.Error("ConnectUsingSavedConnection() on a non-existent ID: expected an error, got nil")
+	}
+}
