@@ -9,5 +9,12 @@
   "author": {
     "name": "Kamerr Ezz",
     "email": "kamerr_oficial@hotmail.com"
+  },
+  "info": {
+    "companyName": "Kamerr Ezz",
+    "productName": "Stackyard",
+    "productVersion": "0.0.0",
+    "copyright": "Copyright © 2026 Kamerr Ezz",
+    "comments": "Local database environment manager and multi-engine DB client"
   }
 }

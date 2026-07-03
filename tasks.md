@@ -168,9 +168,9 @@ code surface with the editable-grid work above.
 
 ## Phase 9 — Polish & Ship v1
 
-- [ ] **9.1** Performance pass: idle memory footprint and cold-start time
+- [x] **9.1** Performance pass: idle memory footprint and cold-start time
       measured and recorded against the NFR bar (spec.md §5).
-- [ ] **9.2** Visual polish pass across both modules against the "not
+- [x] **9.2** Visual polish pass across both modules against the "not
       generic/AI-template" bar — typography, spacing, dark-mode contrast.
 - [ ] **9.3** Windows installer build via Wails' packaging; smoke-test a
       clean install on a machine without the dev toolchain.

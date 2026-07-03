@@ -3224,3 +3224,556 @@ pass (idle memory/cold-start vs. spec.md §5's NFR bar), visual polish
 pass across both modules, Windows installer build + clean-install
 smoke test, and a dogfood run logging friction points as a v1.1 backlog.
 This is the final phase on the roadmap.
+
+---
+
+## Session 16 — 2026-07-03 — Task 9.3 (Windows installer): BLOCKED on NSIS install (requires admin elevation not available in this session)
+
+### What was attempted
+
+- Reviewed `wails.json`: build hooks are already correct (`pnpm`-based,
+  `outputfilename: "stackyard"`, per Session 1's gotcha). No `info` block
+  existed yet, so the NSIS template's version/company/product fields
+  (`build/windows/info.json`, `build/windows/installer/project.nsi`,
+  both driven by Wails' `{{.Info.*}}` template vars) would have built
+  with empty/default values.
+- `wails doctor`: system reports `SUCCESS — Your system is ready for
+  Wails development!` overall, but lists two **optional** dependencies
+  as `Available` (i.e., installable, not installed): `upx` and `nsis`.
+- Confirmed `makensis` is not on `PATH` and `C:\Program Files (x86)\NSIS`
+  / `C:\Program Files\NSIS` don't exist — NSIS is genuinely not present
+  on this machine.
+- `wails build --help` confirms the exact flag for this Wails version
+  (v2.12.0): **`-nsis`** (not `-nsisType` or similar), e.g.
+  `wails build -nsis`.
+- Checked for a safe, non-interactive install path before touching
+  anything manually: `winget` is present and configured
+  (`winget --version` → `v1.29.280`) and resolves the official package
+  (`winget show --id NSIS.NSIS -e` → publisher "Nullsoft and
+  Contributors", homepage `https://nsis.sourceforge.io/Download`,
+  installer SHA256 published in the manifest).
+
+### The blocker
+
+Ran `winget install --id NSIS.NSIS -e --silent --accept-package-agreements
+--accept-source-agreements`. Winget downloaded the installer and reported
+`Successfully verified installer hash` (so the binary itself is
+legitimate and checksum-verified — this was not the problem), then hung
+at `Starting package install...`.
+
+Checked running processes and found `consent.exe` (Windows' UAC elevation
+broker) running alongside `winget.exe` — **the NSIS installer requires
+administrator elevation, this shell session is not elevated
+(`net session` confirms "NOT ELEVATED"), and a UAC consent prompt was
+raised that nothing in this non-interactive session could click
+"Yes" on.** This is exactly the class of blocker this session's standing
+rule requires stopping for, not working around.
+
+Killed the hung `winget.exe` process (`taskkill //F //PID <pid>` —
+confirmed terminated). **`consent.exe` itself could not be killed from
+this non-elevated shell** (`Access is denied`) — it is a protected
+system process. **Flagging explicitly: a Windows UAC dialog
+("Do you want to allow this app to make changes to your device?" for
+the NSIS setup) may still be sitting on your desktop from this attempt
+— please click "No"/Cancel on it if you see it; it is inert (its parent
+process is already dead) and safe to dismiss.**
+
+Confirmed afterward that nothing was actually installed: `winget list
+--id NSIS.NSIS -e` → "No installed package found"; `makensis` still not
+resolvable on `PATH`. No partial/half-installed NSIS state was left
+behind.
+
+### What the user needs to do to unblock this
+
+NSIS needs to be installed by the user directly, since it requires an
+admin-elevation approval this session cannot provide. Either:
+
+1. From an **elevated** ("Run as Administrator") PowerShell/terminal,
+   run the exact command already verified safe above:
+   ```
+   winget install --id NSIS.NSIS -e --silent --accept-package-agreements --accept-source-agreements
+   ```
+   (winget will re-download and re-verify the same checksummed
+   installer; approve the UAC prompt when it appears — there will be
+   one, since this is the normal/expected elevation request for
+   installing software to `Program Files`, not a sign of a problem.)
+2. Or download NSIS manually from its official site
+   (homepage reported by winget's own verified package manifest:
+   `https://nsis.sourceforge.io/Download`) and run the installer
+   normally, approving the UAC prompt.
+
+Once `makensis` resolves on `PATH` (verify with `where makensis` or
+re-run `wails doctor` and confirm `nsis` no longer shows as merely
+`Available`), build the installer with:
+```
+cd D:\CODE\projects\Stackyard
+wails build -nsis
+```
+Expected output per `build/windows/installer/project.nsi`'s `OutFile`
+line: `build/bin/stackyard-amd64-installer.exe`.
+
+### `wails.json` change made this session (in scope — installer metadata only)
+
+Added an `info` block so the NSIS installer (and the built .exe's own
+right-click → Properties → Details tab) show real values instead of
+empty template placeholders:
+```json
+"info": {
+  "companyName": "Kamerr Ezz",
+  "productName": "Stackyard",
+  "productVersion": "0.0.0",
+  "copyright": "Copyright © 2026 Kamerr Ezz",
+  "comments": "Local database environment manager and multi-engine DB client"
+}
+```
+`productVersion` was deliberately left at `"0.0.0"` — matching
+`frontend/package.json`'s current (never-bumped) version — rather than
+inventing a `"1.0.0"` for a v1 that hasn't actually shipped yet (no git
+tag exists in this repo per every prior session's tag-proposal notes
+above). **Revisit this value together with the long-standing
+unresolved v0.1.0-v0.3.0+ tag question** once the project's real
+versioning is finally decided — this is one more place that decision
+needs to land, not a new decision made here.
+
+### Smoke test (task 9.3's second half): not performed — blocked upstream
+
+No installer executable was ever produced, so there is nothing to
+smoke-test yet; this part of the task cannot be approximated without a
+real installer to run. Once the user builds the installer per the steps
+above, the recommended approximation (this dev machine can't be a
+literal "clean machine without the toolchain" since it has the full
+toolchain installed) is:
+
+1. Run the produced `stackyard-amd64-installer.exe` to a throwaway
+   install location (not overwriting anything real).
+2. Launch the **installed** executable from that throwaway location
+   (not `build/bin/stackyard.exe`, which is the raw dev build) and
+   confirm the window opens and the SQLite/Docker backend initializes
+   normally.
+3. Watch for any reach into `frontend/node_modules` or other paths that
+   only exist in this dev checkout — there shouldn't be any (the
+   frontend is embedded into the Go binary via Wails' asset embedding at
+   build time), but this hasn't been verified for this specific build
+   yet.
+4. For real confidence beyond this approximation, a clean Windows VM
+   with no Go/Node/pnpm/Wails installed is the only way to *actually*
+   validate "a machine without the dev toolchain" — recommended before
+   shipping, not required to close this task, given v1's Windows-primary
+   scope (spec.md §6).
+
+### Task 9.3 status
+
+**Blocked, not silently skipped.** Cannot be marked complete in
+`tasks.md` until NSIS is installed (by the user, per above) and the
+build + smoke test steps are re-run.
+
+---
+
+## Session 17 — 2026-07-03 — Task 9.2 (Visual polish pass, cross-module)
+
+### Scope and method
+
+Read every `.tsx` file across both modules (Environment Manager, DB
+Client, Schema Diagram, Migrations) plus the shared shell components
+(`App.tsx`, `Sidebar.tsx`, `TopBar.tsx`, `PingCheck.tsx`) and the design
+tokens (`tailwind.config.ts`, `style.css`), holding all of them in view
+simultaneously to compare visually-equivalent elements across modules —
+per spec.md §5's "dark mode... deliberate typography and visual
+identity... treated as a hard requirement, not a polish pass" and
+tasks.md 9.2's "not generic/AI-template" bar. **Code-level review only —
+no Playwright/browser-automation tool was available in this session, so
+nothing was rendered or screenshotted; every finding below was
+identified by reading Tailwind class usage directly, consistent with
+the fallback pattern already established in earlier sessions (e.g. the
+task 2.4 wizard note and the Session 8/10 mentions in `DbClientView.tsx`'s
+own comments).**
+
+The overall finding: this codebase is unusually disciplined for having
+been built incrementally by many different session-scoped subagents —
+button variants (primary/secondary/danger), card padding (`p-4`),
+border-radius (`rounded`, used exclusively — zero `rounded-md/lg/xl/full`
+anywhere in `frontend/src`), and semantic status colors (emerald=success,
+red=danger, brass=primary-accent/in-between-state) were already
+consistent almost everywhere. Four concrete defects survived the cross-
+module comparison:
+
+### Finding 1 — Two design tokens referenced everywhere were never defined (real bug, not just drift)
+
+`frontend/tailwind.config.ts`'s `ink` color scale defined only
+`950/900/850/800/700/600/400/200/100` — **`ink-500` and `ink-300` were
+missing**, despite `ink-500` being used 52 times across 17 files (e.g.
+`ExportControls.tsx`, `MongoDocumentView.tsx`, `SnippetsPanel.tsx`,
+`ResultsGrid.tsx`, `RedisValueViews.tsx`, `MigrationsView.tsx`,
+`SchemaDiagramView.tsx`, `MermaidDiagram.tsx`) and `ink-300` in 25+
+places (e.g. `PingCheck.tsx`, `StatusDashboard.tsx`, `ImportDialog.tsx`,
+`ResultsGrid.tsx`, `RedisValueViews.tsx`). Since Tailwind only emits a
+utility class for a shade that actually exists in the theme (there is no
+fallback for a custom color family like `ink` the way there is for the
+built-in `gray`/`slate`/etc. palettes), every one of those ~75+
+`text-ink-500`/`text-ink-300` (and any `bg-`/`border-` variants) classes
+compiled to **nothing** — the intended muted/tertiary text tier for
+hints, placeholders, badges, and secondary annotations across nearly
+every module was silently un-styled, falling back to whatever color the
+nearest ancestor happened to set. This directly undermines item 3 of
+this task (dark-mode contrast for secondary/muted text) at a scale no
+single-file fix could reach.
+
+**Fix**: added the two missing shades to `frontend/tailwind.config.ts`,
+linearly interpolated between their existing neighbors so the scale
+reads as one continuous, deliberately-designed progression rather than
+an arbitrary insertion — `ink-300` (`#a0acbe`) is the midpoint of
+`ink-200` (`#c4cddb`) and `ink-400` (`#7c8aa0`); `ink-500` (`#5d6a7f`) is
+the midpoint of `ink-400` (`#7c8aa0`) and `ink-600` (`#3d4a5e`). This
+restores every existing callsite's originally-intended appearance in one
+place instead of touching 75+ individual classNames, and uses the
+existing token *family* rather than inventing an unrelated new color —
+exactly the "use existing tokens" instruction this task was given.
+Zero JSX/behavior changed; this is a config-only fix.
+
+### Finding 2 — `MongoDocumentView.tsx`'s three form-field labels used the wrong tier's typography
+
+Every other bound form-field label (`<label htmlFor>` paired with a real
+`<input>`/`<select>`) across the app — `DbClientView.tsx` (Engine, Host,
+Port, Username, Password, Database), `EnvironmentManagerView.tsx` (New
+profile name), `SchemaDiagramView.tsx` (all 6+ connection fields plus
+Sample size/namespace), and `SnippetsPanel.tsx` (Name, Engine, Scope,
+Tags, Body) — uses **`text-xs uppercase tracking-widest text-ink-400`**.
+`MongoDocumentView.tsx`'s three labels (`mongo-database`,
+`mongo-collection`, `mongo-filter`, originally lines 390/411/448) instead
+used **`text-[10px] uppercase tracking-widest text-ink-500`** — the
+tier this codebase reserves for non-bound secondary annotations (badges,
+hint captions like `RedisValueViews.tsx`'s "Append (one value per line)"
+caption above a plain `<textarea>`, or `QueryEditor.tsx`'s "Tables"
+sub-heading), not for an actual form-field label. Before this fix, Mongo's
+connect form read one typographic size smaller and dimmer than every
+structurally identical form in the rest of the app — a real drift,
+compounded by Finding 1 above (the `text-ink-500` half of it wasn't even
+rendering as intended).
+
+**Fix**: unified all three labels in
+`frontend/src/modules/db-client/MongoDocumentView.tsx` to
+`text-xs uppercase tracking-widest text-ink-400`, matching the dominant
+form-field-label convention used everywhere else.
+
+### Finding 3 — `ImportDialog.tsx`'s modal header used a one-off size/weight/color
+
+Every other panel/section header (`<h2>`) across both modules —
+`QueryEditor.tsx` ("Query editor"), `QueryHistoryPanel.tsx` ("Query
+history"), `SnippetsPanel.tsx` ("Snippets"), `MongoDocumentView.tsx`
+("Mongo document browser"), `RedisKeyBrowser.tsx` ("Redis key browser"),
+`DbClientView.tsx`/`MigrationsView.tsx` ("Saved connections") — uses
+`text-xs uppercase tracking-widest text-ink-400`. `ImportDialog.tsx`'s
+modal title (originally line 86, "Import into {schema}.{table.Name}")
+instead used `text-sm font-semibold uppercase tracking-widest
+text-ink-200` — larger, bolder, and brighter than every other header in
+the app, reading as an unrelated, more "shouty" typographic voice for
+what is semantically the same kind of element (a small-caps section
+label sitting atop a card/panel).
+
+**Fix**: unified `ImportDialog.tsx`'s `<h2>` to
+`text-xs uppercase tracking-widest text-ink-400`.
+
+### Finding 4 — `ImportDialog.tsx`'s "Confirm import" button invented a one-off button variant
+
+Every primary CTA across the entire app — `EnvironmentManagerView.tsx`
+("Create & Start"), `DbClientView.tsx` ("Test connection"/"Connect",
+"Save connection"), `QueryEditor.tsx` ("Run query"),
+`SnippetsPanel.tsx`/`RedisValueViews.tsx` ("Save"), `MigrationsView.tsx`
+("Apply pending migrations"), `SchemaDiagramView.tsx` ("Connect"), and
+even `ImportDialog.tsx`'s own "Choose CSV/JSON file" button two elements
+above it — uses the same filled-brass primary style: `rounded bg-brass-600
+px-4 py-2 text-sm font-medium text-ink-950 hover:bg-brass-500`. The
+"Confirm import" button (originally line 138) instead used a bordered
+green-outline variant (`border-emerald-700 text-emerald-400
+hover:border-emerald-500 hover:text-emerald-300`) found nowhere else in
+the app as a *static* button style — emerald elsewhere is reserved for
+transient success feedback (e.g. a "Copied!" state) or status text, never
+as a permanent button skin. This made the dialog's own two primary
+actions ("Choose file" vs. "Confirm import") look like they belonged to
+two different design systems.
+
+**Fix**: changed "Confirm import" to the same filled-brass primary style
+used by every other primary action in the app, including its own sibling
+button in the same dialog.
+
+### What was deliberately left alone (considered, not a drift)
+
+- **`SnippetsPanel.tsx`'s "Global" (emerald) vs. "Scoped" (sky) badge
+  pair**: sky appears nowhere else in the app, but there is no other
+  "connection scope" concept anywhere else to be inconsistent with — this
+  is a self-contained, deliberate two-color semantic pairing, not a
+  cross-module drift.
+- **`StatusDashboard.tsx`/`EnvironmentManagerView.tsx`'s reuse of
+  `brass-400` for "partial/restarting/paused" mid-states**: both files
+  independently arrived at the same choice (brass doing double-duty as
+  both the primary accent and an "in-between" status color) — internally
+  consistent between the only two places this concept exists, so left
+  as-is.
+- **`ResultsGrid.tsx`'s amber "no primary key" banner**: the only
+  amber/warning-tier UI in the app, but also the only place a
+  non-destructive-but-important caveat banner exists — nothing else in
+  the app is the same kind of element to compare it against, so this was
+  not touched.
+- Border-radius, card padding (`p-4`), and destructive/success button
+  colors were already 100% consistent everywhere they appear — no changes
+  needed.
+
+### Files modified this session
+
+- `frontend/tailwind.config.ts` — added `ink-500`/`ink-300` to the `ink`
+  color scale (Finding 1).
+- `frontend/src/modules/db-client/MongoDocumentView.tsx` — 3 label
+  className fixes (Finding 2).
+- `frontend/src/modules/db-client/ImportDialog.tsx` — header className
+  fix + Confirm import button className fix (Findings 3 and 4).
+- `tasks.md` — checked off 9.2.
+
+No Go file and nothing under `internal/` was touched — every change this
+session is a Tailwind `className`/config edit, zero logic/state/props/
+bound-method changes, per this task's strict visual-only constraint.
+
+### Verification
+
+- `cd frontend && pnpm run build` — clean, zero TS errors (only the
+  pre-existing "chunks larger than 500 KiB" advisory from Mermaid/Monaco,
+  unrelated to this change and present before it).
+- `cd frontend && pnpm run test` (`vitest run`) — **202/202 tests passing
+  across all 15 existing suites**, unchanged from before this session
+  (no new tests were needed — this pass introduced no new non-trivial
+  logic, only className edits and a two-value config addition).
+- `go build ./...` — clean, confirming zero Go-side changes were made.
+- `go test ./...` — all 13 packages report `ok` (cached, confirming no
+  Go source changed since the last successful run).
+
+### Task 9.2 status
+
+**Complete.** `tasks.md` 9.2 is checked. Verification for this task was
+code-level only (no Playwright/browser-automation tool available in this
+session) — a real rendered/click-through pass, matching earlier
+sessions' manual-verification passes (e.g. task 1.7, the Phase 2
+end-to-end pass), is still recommended before final ship, but is out of
+scope for what this session could perform.
+
+---
+
+## Session 18 — 2026-07-03 — Task 9.1 (Performance pass: cold-start + idle memory vs. spec.md §5's NFR bar)
+
+### Build used for every measurement
+
+Production build via Wails' own CLI, not `wails dev`:
+
+```
+cd D:\CODE\projects\Stackyard
+wails build
+```
+
+Confirmed from the build's own printed options table: `Build Mode |
+production`, `Devtools | false`, `Compress | false`, `Package | true`.
+Executable: `D:\CODE\projects\Stackyard\build\bin\stackyard.exe`
+(49,825,280 bytes ≈ 47.5 MiB on disk, single self-contained binary — the
+frontend `dist/` is Go-embedded via `//go:embed all:frontend/dist` in
+`main.go`, no separate asset files ship alongside it). No installer
+wrapper exists yet (task 9.3 is blocked on NSIS — see Session 16), so
+this is the raw built exe, launched directly, not an installed copy.
+
+Before measuring, `main.go`/`wails.json` were checked for leftover debug
+flags: none found (`grep -i "Debug|LogLevel|devtools"` in `main.go` — no
+matches; the build's own options table already confirms `Devtools:
+false` and `Build Mode: production`). No fix was needed on that front.
+
+### Methodology
+
+**Cold-start**: a PowerShell script (`Start-Process -PassThru`, polling
+`$proc.MainWindowHandle`/`MainWindowTitle` every 20ms) times from the
+`Start-Process` call to the moment the OS reports the app's main window
+exists and has a title — the earliest OS-visible proxy for "the window
+is up" available without a display-automation tool in this session
+(no Playwright/screenshot tool was available to time actual WebView2
+DOM paint). Each run's process was killed immediately after measurement
+so no run started with the app already warm in memory. Ran 7 total
+fresh-process launches across 3 separate `wails build` invocations (to
+also sample "first execution of a just-compiled binary" more than once,
+not just steady-state relaunches).
+
+**Idle memory**: launched the built exe, slept 45 seconds (idle
+settling period per the task's suggested 30-60s window — no queries,
+containers, or Docker operations running during the sleep), then
+sampled memory two ways:
+1. `Get-Process` on the main `stackyard.exe` PID alone.
+2. The **full process tree** rooted at that PID (`Get-CimInstance
+   Win32_Process -Filter "ParentProcessId=..."`, walked recursively) —
+   necessary because WebView2, like any Chromium-based host, spawns
+   several child helper processes (browser/GPU/network-service/
+   renderer/crashpad), and only counting the main `stackyard.exe` PID
+   would understate the app's real footprint, the same mistake that
+   would make an Electron app look artificially light if you only
+   measured its main process and ignored renderer/GPU children.
+
+Ran each measurement 3 times. Process killed (main PID + every
+discovered child PID) after each sample.
+
+### Cold-start — raw numbers, all runs
+
+| Run | Context | Launch-call → window-visible (ms) |
+|---|---|---|
+| 1 | First-ever launch of Session 18's first build | **5562.3** |
+| 2 | Repeat launch, same build | 906.3 |
+| 3 | Repeat launch, same build | 897.5 |
+| 4 | Repeat launch, same build | 928.7 |
+| 5 | Repeat launch, same build | 917.8 |
+| 6 | Repeat launch, same build | 903.8 |
+| 7 | First launch of a **second**, freshly rebuilt binary | 924.1 |
+
+Run 1 (5562 ms) was a clear outlier — the *only* one of the 7 launches
+to exceed 1 second, and by nearly 6×. Run 7 deliberately re-tested "does
+the very first launch of a just-compiled exe cost extra" by rebuilding
+from scratch and measuring that build's first-ever launch — it came back
+at 924 ms, indistinguishable from the steady-state runs. This rules out
+"first execution of a new binary" as the cause of Run 1's spike; the
+likely explanation is a one-time cost specific to that exact process
+(most plausibly Windows Defender/SmartScreen doing a full scan the very
+first time *this specific file name/hash had ever been seen on this
+machine*, before any reputation was cached) rather than anything
+Stackyard's own code controls. This is reported plainly rather than
+discarded, since a real first-time user's very first launch after
+installing could plausibly hit the same one-time cost — but it is not
+representative of the app's steady-state behavior.
+
+**Steady-state average (6 runs, excluding the Run 1 outlier): ≈ 913 ms**
+(range 897.5–928.7 ms, a tight ~31 ms spread — very low variance run to
+run). **Including the outlier, average across all 7: ≈ 1434 ms.**
+
+### Idle memory — raw numbers, all runs (45s settle each)
+
+Main process (`stackyard.exe`) only:
+
+| Run | Working Set (MB) | Private Memory (MB) | Threads | Handles |
+|---|---|---|---|---|
+| 1 | 57.6 | 72.1 | 26 | 395 |
+| 2 | 57.6 | 71.4 | 27 | 396 |
+| 3 | 58.0 | 72.1 | 24 | 396 |
+
+Full process tree (main `stackyard.exe` + every WebView2 child process —
+consistently 7 processes total: 1 main + 6 WebView2 helpers matching the
+standard Chromium multi-process model — browser host, GPU, network
+service, crashpad, and renderer processes):
+
+| Run | Total Working Set (MB) | Total Private Memory (MB) | Process count |
+|---|---|---|---|
+| 1 | 405.5 | 268.6 | 7 |
+| 2 | 409.1 | 266.8 | 7 |
+| 3 | 405.7 | 264.9 | 7 |
+
+**Main-process average: ≈ 57.7 MB working set / 71.9 MB private.
+Full-tree average: ≈ 406.8 MB working set / 266.8 MB private.**
+
+Both sets of 3 runs are tightly clustered (main process ±0.4 MB, full
+tree ±3.6 MB WS / ±3.7 MB private) — no memory growth or instability
+observed across repeated idle 45s windows.
+
+### Honest assessment against spec.md §5's bar
+
+spec.md §5 states: *"Native desktop, not Electron-class weight. Idle
+memory footprint and cold-start time are explicit review criteria."*
+The task brief's own framing cites Electron apps commonly idling in the
+**150-300 MB+** range for a comparable feature set.
+
+**Cold-start: genuinely good, no reservations.** ~900 ms steady-state
+from process launch to a titled, visible window is fast for a desktop
+app with a Go backend (SQLite open, Docker client construction and a
+3-second-timeout `Ping`) plus a WebView2 host spinning up underneath it.
+Confirmed by reading `app.go`'s `startup()` that the Docker `Ping` (which
+can take up to `dockerStartupPingTimeout = 3s` if slow/absent — Docker
+Desktop was **not** running during any of these measurements, so every
+run exercised the "Docker unreachable" path) runs without blocking
+window visibility — Wails shows the window and lets the frontend render
+while `startup()` runs in the background, so a slow or entirely absent
+Docker daemon does not cost the user any cold-start latency. This is a
+real, working architectural choice, not an accident, and is called out
+here because it is the reason cold-start stays fast regardless of the
+user's Docker state.
+
+**Idle memory: mixed — must be reported honestly, not spun.** The
+**main `stackyard.exe` process alone** (~58 MB working set, ~72 MB
+private) is genuinely light — well under Electron-class, and this is
+the part of the footprint that is actually "our code" (Go backend +
+Wails runtime glue, no bundled Chromium/Node inside this binary itself,
+confirmed by the ~47.5 MiB on-disk size with no separate
+runtime/framework files shipped alongside it).
+
+However, the **full resident footprint while the app is running**
+— main process plus the 6 WebView2 helper processes Windows actually
+keeps alive for it — totals **~267 MB private memory / ~407 MB working
+set**. That total sits *within* (private memory) to *above* (working
+set) the "150-300 MB+" Electron-class range this task's own bar cites
+for comparison. This is not a bug or a regression to fix — it is the
+Chromium multi-process model that WebView2 (Microsoft Edge's shared
+system component) uses under the hood, structurally the same
+multi-process architecture Electron itself is built on. The genuine
+architectural win over Electron is **not** "less RAM used while
+running": it is that WebView2 is a **shared OS-level runtime** most
+Windows 10 (2004+)/11 machines already have installed system-wide (one
+copy serves every WebView2 app on the machine, and it does not add to
+Stackyard's own install/disk size the way Electron bundling its own
+private Chromium+Node copy per app does), and that the *application's
+own* binary and logic footprint (the 58 MB/72 MB figures above) is a
+small fraction of the total, unlike an Electron app where the
+developer's own JS/Node code runs inside the same heavyweight renderer
+process being measured.
+
+**Bottom line:** cold-start clearly passes the NFR bar as stated.
+Idle memory's "our own code" slice clearly passes it too, but the
+*total number a user would see in Task Manager* does not
+straightforwardly read as "meaningfully lighter than Electron" the way
+the bar implies — it reads as comparable in raw magnitude, for
+architecturally different reasons. This should be flagged to the
+project owner as a real, measured finding rather than assumed away.
+
+### Fix considered, not made
+
+No idle background work was found running by default: `StatusDashboard.tsx`
+(the only view with a live-refresh concept, spec.md §3.5) starts its
+backend poller (`StartStatusWatcher`, 1.5s interval per `app.go`) only in
+a `useEffect` scoped to that component's mount, and tears it down
+(`StopStatusWatcher`) on unmount — confirmed by reading both files. Since
+the app's default view is not the Status Dashboard (`App.tsx`'s
+`activeView === 'status'` gate), idle memory/CPU measured above reflects
+a genuinely idle app, not one secretly polling in the background. No
+debug flags, dev-only code paths, or obviously-wasteful intervals were
+found anywhere in scope, so — per this project's evidence-based-fixes-
+only discipline and this task's explicit instruction not to
+speculatively "optimize" without measured evidence — **no code change
+was made**. The WebView2 multi-process overhead identified above is a
+platform-level characteristic, not a localized, safely-fixable bug; it
+is out of scope for a "narrowly-scoped" fix and not something app code
+controls without a much larger, riskier change (e.g. disabling GPU
+acceleration or renderer process isolation, neither justified without a
+demonstrated user-facing problem).
+
+### Verification run this session (no application code changed)
+
+- `go build ./...` — clean.
+- `go vet ./...` — clean.
+- `gofmt -l .` — no files listed (clean).
+- `go test ./...` — all 13 packages `ok` (one run briefly failed with
+  `cannot embed directory frontend/dist: contains no embeddable
+  files` because `go test` executed while `frontend/dist` was
+  momentarily empty from an in-progress frontend rebuild running in
+  parallel — the same documented `//go:embed`/`dist` quirk noted in
+  earlier sessions, e.g. Session 15's Migrations verification pass;
+  re-ran after `pnpm run build` finished and it passed clean).
+- `pnpm run build` (in `frontend/`) — clean, zero TS errors (same
+  pre-existing "chunks larger than 500 KiB" Mermaid/Monaco advisory
+  from Session 17, unrelated to this task).
+- `pnpm run test` (in `frontend/`) — **202/202 tests passing**, all 15
+  suites, unchanged from Session 17.
+
+### Task 9.1 status
+
+**Complete.** `tasks.md` 9.1 is checked. Both required measurements
+(cold-start, idle memory) were taken with multiple runs each, raw
+per-run numbers recorded above (not just averages), and assessed
+plainly against spec.md §5 — including the one finding (full-tree idle
+memory) that does not cleanly favor the "lighter than Electron"
+narrative. No code fix was made; the reasoning for why none was
+warranted is recorded above rather than left implicit.

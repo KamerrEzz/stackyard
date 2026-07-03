@@ -83,7 +83,7 @@ function ImportDialog({sessionID, schema, table, onClose, onImported}: ImportDia
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
             <div className="flex max-h-[80vh] w-full max-w-2xl flex-col gap-4 overflow-auto rounded border border-ink-700 bg-ink-950 p-5">
                 <div className="flex items-center justify-between">
-                    <h2 className="text-sm font-semibold uppercase tracking-widest text-ink-200">
+                    <h2 className="text-xs uppercase tracking-widest text-ink-400">
                         Import into {schema}.{table.Name}
                     </h2>
                     <button
@@ -135,7 +135,7 @@ function ImportDialog({sessionID, schema, table, onClose, onImported}: ImportDia
                         type="button"
                         onClick={() => void handleConfirmImport()}
                         disabled={!canConfirm}
-                        className="rounded border border-emerald-700 px-4 py-2 text-sm font-medium text-emerald-400 transition-colors hover:border-emerald-500 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         {stage === 'importing' ? 'Importing…' : 'Confirm import'}
                     </button>

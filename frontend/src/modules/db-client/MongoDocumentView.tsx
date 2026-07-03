@@ -387,7 +387,7 @@ function MongoDocumentView({fields}: MongoDocumentViewProps) {
 
             <div className="flex flex-wrap items-center gap-3">
                 <div className="flex flex-col gap-1">
-                    <label htmlFor="mongo-database" className="text-[10px] uppercase tracking-widest text-ink-500">
+                    <label htmlFor="mongo-database" className="text-xs uppercase tracking-widest text-ink-400">
                         Database
                     </label>
                     <select
@@ -408,7 +408,7 @@ function MongoDocumentView({fields}: MongoDocumentViewProps) {
                 </div>
 
                 <div className="flex flex-col gap-1">
-                    <label htmlFor="mongo-collection" className="text-[10px] uppercase tracking-widest text-ink-500">
+                    <label htmlFor="mongo-collection" className="text-xs uppercase tracking-widest text-ink-400">
                         Collection
                     </label>
                     <select
@@ -445,7 +445,7 @@ function MongoDocumentView({fields}: MongoDocumentViewProps) {
 
             {selectedDatabase && selectedCollection && (
                 <div className="flex flex-col gap-1">
-                    <label htmlFor="mongo-filter" className="text-[10px] uppercase tracking-widest text-ink-500">
+                    <label htmlFor="mongo-filter" className="text-xs uppercase tracking-widest text-ink-400">
                         Filter (JSON)
                     </label>
                     <div className="flex flex-wrap items-center gap-2">
