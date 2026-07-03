@@ -5351,3 +5351,113 @@ version) was renamed to `## [1.0.0] - 2026-07-03`, with a fresh empty
 Published to GitHub: public repository `KamerrEzz/stackyard`, license
 PolyForm Noncommercial 1.0.0, `main` branch pushed with full history,
 release tag `v1.0.0` created via `gh release create`.
+
+## Session 28 — docs-site: Spanish translation with EN/ES i18n switcher
+
+Added a full Spanish translation of the public docs site
+(`docs-site/`), using VitePress's built-in `locales` i18n feature — not
+a hand-rolled solution.
+
+### Config approach
+
+`docs-site/.vitepress/config.mts` gained a `locales` block inside
+`defineConfig`:
+
+- `root`: the existing English locale, unchanged paths (`/`,
+  `/getting-started`, `/features/*`, `/about`,
+  `/contributing-with-ai`). Its `nav`/`sidebar`/`footer` were moved from
+  the old top-level `themeConfig` into `locales.root.themeConfig`
+  unchanged; `label: "English"`, `lang: "en"`.
+- `es`: new locale served under `/es/`, `label: "Español"`, `lang:
+  "es"`, `link: "/es/"`. Own `themeConfig.nav`/`sidebar`/`footer.message`
+  with translated labels, all links pointing at `/es/...` equivalents.
+  Own `description` override (Spanish product description).
+- Locale-independent config (`socialLinks`, `search.provider: "local"`)
+  stayed in the shared top-level `themeConfig`, since VitePress merges
+  shared and per-locale `themeConfig` per the docs.
+- `footer.copyright` ("Copyright © 2026 Kamerr Ezz") was left as-is in
+  both locales — it's a name, not prose.
+- VitePress automatically renders the language switcher in the navbar
+  once `locales` has more than one entry (`VPNavBarTranslations`) — no
+  custom component needed.
+
+### Content created
+
+Full mirror under `docs-site/es/`: `index.md`, `getting-started.md`,
+`about.md`, `contributing-with-ai.md`,
+`features/{environment-manager,db-client,schema-diagram,import-export,migrations}.md`.
+Faithful translations of the real English source (not rewrites), code
+blocks/commands/paths/config keys left untranslated, proper nouns kept
+as-is (Stackyard, Wails, Postgres/MySQL/MongoDB/Redis, Docker,
+VitePress, GitHub, Prisma, Drizzle, Monaco, PolyForm Noncommercial
+License 1.0.0). Screenshots reference the exact same
+`/screenshots/*.png` paths as the English pages (no image duplication
+into an `es/` subfolder) — confirmed in the built output that both
+locales resolve to `/stackyard/screenshots/...`.
+
+The About page's AI/human collaboration disclosure section was
+translated with the same factual, non-promotional tone as the English
+original — this is the one place in the whole project where the
+no-AI-attribution rule has a narrow, explicit exception (scoped to that
+page, both languages), per `CLAUDE.md`.
+
+### Terminology judgment calls
+
+- "environment" → **"entorno"** consistently (Environment Manager →
+  "Gestor de entornos").
+- "editable data grid" / "spreadsheet-style editable data grid" →
+  **"grilla de datos editable"** / "grilla estilo hoja de cálculo" — kept
+  "grilla" (not "cuadrícula" or "tabla") since it's the more common,
+  neutral term for a UI editable grid across Spanish-speaking dev
+  audiences and avoids overloading "tabla" (already used for DB table).
+- "profile" (as in a Docker environment profile) → **"perfil"**.
+- Neutral/professional register throughout: infinitive or impersonal
+  constructions for instructions ("Abrir Environments...", "Para quienes
+  prefieran...") instead of regional `vos`/`tú` forms, per this
+  project's convention that explicit Spanish requests use neutral,
+  professional Spanish rather than a regional variant.
+- "connection string" → "cadena de conexión"; "query" (as a noun,
+  DB context) → "consulta"; "snippet" left as an established loanword
+  where the English UI itself uses "Snippets" as a proper feature name,
+  but translated as prose ("consultas guardadas"/"snippets") depending
+  on context — kept "Snippets" capitalized when referring to the literal
+  UI section name.
+
+### Verification
+
+- `pnpm run docs:build` (from `docs-site/`) succeeded with no errors —
+  output landed in `docs-site/.vitepress/dist` (not a top-level `dist/`;
+  VitePress's default `outDir` is relative to the `.vitepress` config
+  directory unless overridden, which this project doesn't do).
+- Confirmed both locale trees exist: `dist/index.html` and
+  `dist/es/index.html`.
+- Confirmed `<html lang="...">` differs correctly: `lang="en"` on the
+  English pages, `lang="es"` on the Spanish pages (grepped both).
+- Grepped built Spanish HTML for real translated strings (e.g.
+  "Gestor de entornos", "colaboración estrecha" in the About page's AI
+  disclosure section) to confirm translations actually landed, not
+  placeholder content.
+- Grepped rendered (not raw site-data JSON) nav links per page: English
+  pages render English-language nav (`Getting Started`), Spanish pages
+  render Spanish nav with `/stackyard/es/...` hrefs. Note: the raw
+  `__VP_SITE_DATA__` JSON embedded in every page includes *all* locales'
+  config (needed for the client-side switcher to work without a
+  reload) — grepping that blob alone is not a valid check; the actual
+  rendered `<nav>` markup was checked separately.
+- Confirmed the navbar's `VPNavBarTranslations` (language switcher)
+  element is present in the built output.
+- Confirmed screenshot `<img src>` in built Spanish feature pages
+  resolve to the same `/stackyard/screenshots/*.png` paths as English
+  (no duplication, no broken paths).
+- No browser tool was available in this session — verification relied
+  on the build + grep checks above instead of a visual
+  `docs:preview` pass; this is the documented substitute per the task's
+  own fallback instruction.
+- `go build ./...` — clean, no output, unaffected.
+- `pnpm run build` in `frontend/` — succeeded (pre-existing chunk-size
+  warning only, unrelated to this change).
+- Build artifacts (`docs-site/.vitepress/dist`, `.vitepress/cache`) were
+  removed after verification — not part of source control.
+
+Nothing was committed; all changes are left in the working tree per
+instruction.
