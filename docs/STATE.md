@@ -4089,7 +4089,119 @@ already gives strong confidence.
 
 `tasks.md` 9.3 is now checked. **Phase 9 (Polish & Ship v1) is fully
 closed — all of 9.1, 9.2, 9.3, 9.4 complete.** This closes every phase
-in `plan.md`'s roadmap; no Phase 10 exists.
+in `plan.md`'s roadmap; no Phase 10 exists as of this point.
 
 **`v1.0.0` is now due**, pinned to this session's closing commit (see
 the "Proposed version tags" section for the exact command).
+
+---
+
+## Session 22 — Dead-code cleanup, then Phase 10 opens: real user feedback after v1
+
+### Dead-code cleanup (requested directly, not a tasks.md item)
+
+The user asked for a repo-hygiene pass. `go run golang.org/x/tools/cmd/deadcode@latest .`
+found 7 candidates; each was manually verified against the real call
+graph (not trusted blindly — this tool's reachability model starts from
+`main()`, which would misleadingly flag every Wails-bound method as
+"dead" too, since Wails calls those via reflection; none of the 7 below
+were Wails-bound methods themselves, so this concern didn't actually
+apply here, but was checked anyway):
+
+- `tagsFromJSON` (`app.go`) — the frontend decodes `TagsJSON` itself;
+  this Go-side reverse of `tagsToJSON` was never called. Removed.
+- `redis.New` (`internal/dbengine/redis/redis.go`) — only `NewFromURL`
+  is used by `OpenRedisConnection`; this alternative constructor had no
+  caller and no test. Removed (package doc comment updated to stop
+  naming it).
+- `ValidationReport.Valid()` (`internal/importdata/validate.go`) — only
+  called from tests; `import.go` itself checks `len(Mismatches)`
+  directly. Removed; the 8 test call sites were switched to the same
+  `len(report.Mismatches)` check the production code already uses, not
+  simply deleted, since the tests themselves still validate real
+  behavior.
+- `storage.UpdateConnection`, `storage.UpdateService`,
+  `storage.DeleteService` — each had real, passing tests but no bound
+  method ever called them from the frontend. Removed along with their
+  dedicated tests (each test existed solely to exercise the now-removed
+  function).
+- `storage.ListSnippetsForConnection` — a convenience wrapper that
+  internally just called `storage.ListSnippets(db,
+  SnippetFilter{ForConnection: ...})`. **Caught and corrected before
+  deleting naively**: the underlying `ForConnection` scoping logic
+  inside `ListSnippets` is still very much live (`app.go`'s bound
+  `ListSnippets` method builds that same filter directly) — deleting
+  the wrapper AND its two tests outright would have silently dropped
+  real test coverage for logic still in production use. Instead, the
+  two tests were rewritten to call `storage.ListSnippets` with the
+  filter directly (same assertions, same behavior proven), and only the
+  now-genuinely-unused wrapper function itself was removed.
+
+Verified after: `go build/vet ./...` clean, `gofmt -l .` clean (two
+files needed re-formatting after the deletions left stray blank lines),
+`go test ./...` and `go test -tags=integration ./...` both fully green,
+and a second `deadcode` run afterward found zero remaining candidates.
+
+**Ironic timing note**: `storage.UpdateService` — deleted here as
+unused — is the exact storage-layer capability task 10.1 below now
+needs reconnected. Not restored yet in this session pending 10.1's own
+implementation, which will rebuild whatever shape it actually needs
+rather than assume the deleted version's shape still fits (10.1's
+clarified scope is "set once at creation," not "edit after creation,"
+so the exact function needed may look different — see 10.1 below).
+
+### Phase 10 opens: real feedback from the user's own hands-on use of the v1 build
+
+Unprompted, unstructured feedback after using the installed app for
+real (Environments, DB Client, connection strings, snippets, query
+history, Schema Diagram, Status). Genuinely new scope beyond
+`spec.md`/`plan.md`'s v1 definition — not a bug report. Each item below
+was clarified with the user before any code was written (asked, not
+assumed):
+
+1. **No way to set a service's username/password** — confirmed real: profiles
+   can be renamed (`RenameProfile`), but every service's DB credentials
+   are hardcoded defaults (`defaultPostgresUsername`, etc. in `app.go`),
+   not configurable at creation or after. **Clarified scope (task
+   10.1)**: add username/password fields to "Create profile" only — set
+   once at creation, fixed afterward, matching every other
+   already-created field's behavior. Explicitly NOT live credential
+   rotation on an already-running container — that would require
+   stopping the container, recreating it with new env vars, and likely
+   losing data via a volume reset, since Postgres/MySQL don't expose an
+   easy way to change the bootstrap superuser's password without direct
+   access. The user chose the simpler, safer option.
+2. **"Browse/edit table data" — already exists**, not a gap. The
+   "Browse" button next to each table in the DB Client's Tables list
+   (task 4.1's work) opens the editable grid. Flagged to the user in
+   case it's a discoverability problem rather than a missing feature —
+   no action taken pending their confirmation either way.
+3. **Create new tables without writing SQL — genuinely missing.**
+   **Clarified scope (task 10.2)**: a form (table name + columns, each
+   with type/nullable/primary-key/default) that generates and runs a
+   real `CREATE TABLE`, Postgres/MySQL (matching every other relational-
+   only feature's scope in this project).
+4. **Starter/template snippets + ORM schema export — the biggest,
+   vaguest ask, deliberately scoped down before starting.** Clarified
+   into three separate, independently-shippable pieces:
+   - **10.3**: a gallery of pre-built SQL snippet templates (e.g. "Auth:
+     users + sessions + tokens") insertable with one click — SQL only,
+     no ORM generation, Postgres/MySQL.
+   - **10.4**: export an existing connection's schema as a real
+     `schema.prisma` file, built on the existing `ListTables`
+     introspection (no new schema-reading code needed).
+   - **10.5**: same as 10.4 but for Drizzle's `schema.ts` syntax.
+   AI-assisted query generation and a general plugin system remain
+   explicitly out of scope per `spec.md` §6 — these three are
+   template/introspection features, not either of those.
+
+### Dependency assessment for Phase 10
+
+10.1 (Environments), 10.2 (create table), and 10.3 (snippet templates)
+are genuinely independent — different modules, no shared code surface.
+10.4/10.5 (Prisma/Drizzle export) are tightly coupled to each other
+(same underlying "table introspection → target schema syntax"
+conversion, just two different output languages) but independent of
+10.1-10.3 — bundled together the same way CSV/JSON/SQL-dump export was
+bundled in Phase 7, for the same reason. All four work streams
+dispatched in parallel.

@@ -29,13 +29,6 @@ type ValidationReport struct {
 	RowCount   int
 }
 
-// Valid reports whether report found zero mismatches — the hard-block gate
-// tasks.md 7.4 requires: ImportFile (app.go) refuses to write a single row
-// unless this is true.
-func (r ValidationReport) Valid() bool {
-	return len(r.Mismatches) == 0
-}
-
 // Validate checks file against table's real columns (tasks.md 7.4, spec.md
 // §4.9's pre-commit validation requirement), collecting every mismatch
 // across the whole file before returning rather than stopping at the first

@@ -29,8 +29,8 @@ func TestValidate_UnknownColumn(t *testing.T) {
 
 	report := Validate(file, widgetsTable())
 
-	if report.Valid() {
-		t.Fatal("Validate() reported Valid(), want a mismatch for the unknown column")
+	if len(report.Mismatches) == 0 {
+		t.Fatal("Validate() reported zero mismatches, want a mismatch for the unknown column")
 	}
 	found := false
 	for _, m := range report.Mismatches {
@@ -53,8 +53,8 @@ func TestValidate_NumericTypeMismatch(t *testing.T) {
 
 	report := Validate(file, widgetsTable())
 
-	if report.Valid() {
-		t.Fatal("Validate() reported Valid(), want a mismatch for a non-numeric weight")
+	if len(report.Mismatches) == 0 {
+		t.Fatal("Validate() reported zero mismatches, want a mismatch for a non-numeric weight")
 	}
 	if len(report.Mismatches) != 1 || report.Mismatches[0].Column != "weight" || report.Mismatches[0].RowIndex != 0 {
 		t.Errorf("Mismatches = %+v, want exactly one weight mismatch at RowIndex 0", report.Mismatches)
@@ -71,8 +71,8 @@ func TestValidate_DateTypeMismatch(t *testing.T) {
 
 	report := Validate(file, widgetsTable())
 
-	if report.Valid() {
-		t.Fatal("Validate() reported Valid(), want a mismatch for an unparseable restocked_at")
+	if len(report.Mismatches) == 0 {
+		t.Fatal("Validate() reported zero mismatches, want a mismatch for an unparseable restocked_at")
 	}
 	if len(report.Mismatches) != 1 || report.Mismatches[0].Column != "restocked_at" {
 		t.Errorf("Mismatches = %+v, want exactly one restocked_at mismatch", report.Mismatches)
@@ -89,8 +89,8 @@ func TestValidate_BooleanTypeMismatch(t *testing.T) {
 
 	report := Validate(file, widgetsTable())
 
-	if report.Valid() {
-		t.Fatal("Validate() reported Valid(), want a mismatch for an unrecognized boolean literal")
+	if len(report.Mismatches) == 0 {
+		t.Fatal("Validate() reported zero mismatches, want a mismatch for an unrecognized boolean literal")
 	}
 	if len(report.Mismatches) != 1 || report.Mismatches[0].Column != "in_stock" {
 		t.Errorf("Mismatches = %+v, want exactly one in_stock mismatch", report.Mismatches)
@@ -107,8 +107,8 @@ func TestValidate_NullIntoNonNullableColumn(t *testing.T) {
 
 	report := Validate(file, widgetsTable())
 
-	if report.Valid() {
-		t.Fatal("Validate() reported Valid(), want a mismatch for NULL into non-nullable name")
+	if len(report.Mismatches) == 0 {
+		t.Fatal("Validate() reported zero mismatches, want a mismatch for NULL into non-nullable name")
 	}
 	if len(report.Mismatches) != 1 || report.Mismatches[0].Column != "name" {
 		t.Errorf("Mismatches = %+v, want exactly one name mismatch", report.Mismatches)
@@ -125,8 +125,8 @@ func TestValidate_MissingKeyOnNonNullableColumnIsTreatedAsNull(t *testing.T) {
 
 	report := Validate(file, widgetsTable())
 
-	if report.Valid() {
-		t.Fatal("Validate() reported Valid(), want a mismatch for name entirely missing from the row")
+	if len(report.Mismatches) == 0 {
+		t.Fatal("Validate() reported zero mismatches, want a mismatch for name entirely missing from the row")
 	}
 	if len(report.Mismatches) != 1 || report.Mismatches[0].Column != "name" {
 		t.Errorf("Mismatches = %+v, want exactly one name mismatch", report.Mismatches)
@@ -145,7 +145,7 @@ func TestValidate_GenuinelyValidFileHasNoMismatches(t *testing.T) {
 
 	report := Validate(file, widgetsTable())
 
-	if !report.Valid() {
+	if len(report.Mismatches) != 0 {
 		t.Fatalf("Validate() = %+v, want zero mismatches for a genuinely valid file", report.Mismatches)
 	}
 	if report.RowCount != 3 {
@@ -180,7 +180,7 @@ func TestValidate_JSONNativeTypesAreAcceptedDirectly(t *testing.T) {
 
 	report := Validate(file, widgetsTable())
 
-	if !report.Valid() {
+	if len(report.Mismatches) != 0 {
 		t.Fatalf("Validate() = %+v, want zero mismatches for native JSON number/bool values", report.Mismatches)
 	}
 }

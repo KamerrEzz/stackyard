@@ -10,8 +10,8 @@
 // mongo.Engine's own precedent for the same reason (see mongo.go's package
 // doc comment).
 //
-// A *Engine value is constructed already bound to one address/URI via New
-// or NewFromURL; Connect performs the actual dial and an initial ping,
+// A *Engine value is constructed already bound to one address/URI via
+// NewFromURL; Connect performs the actual dial and an initial ping,
 // matching the same lifecycle shape postgres.Engine/mysql.Engine/
 // mongo.Engine all use, for consistency across engines, even though this
 // type implements no shared interface with them.
@@ -39,20 +39,6 @@ var ErrKeyExists = errors.New("redis: key already exists")
 type Engine struct {
 	options *redisdriver.Options
 	client  *redisdriver.Client
-}
-
-// New returns an Engine bound to addr (a "host:port" string), password (an
-// empty string for no auth), and db (the numbered logical database to
-// select on every connection). It does not dial; call Connect to establish
-// the client.
-func New(addr, password string, db int) *Engine {
-	return &Engine{
-		options: &redisdriver.Options{
-			Addr:     addr,
-			Password: password,
-			DB:       db,
-		},
-	}
 }
 
 // NewFromURL returns an Engine bound to uri, a standard "redis://" (or

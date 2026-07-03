@@ -43,9 +43,8 @@ type Service struct {
 // migrations (Phase 8) scaffolds and discovers migration file pairs in for
 // this connection (plan.md §4: migration file content lives on disk, not in
 // this SQLite database). It is deliberately excluded from
-// CreateConnection/UpdateConnection's generic column list, the same way
-// LastUsedAt is excluded from UpdateConnection — see
-// SetConnectionMigrationsFolder's doc comment.
+// CreateConnection's generic column list — see SetConnectionMigrationsFolder's
+// doc comment.
 type Connection struct {
 	ID                int64
 	Name              string

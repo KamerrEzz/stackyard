@@ -185,7 +185,7 @@ func TestListSnippets_SearchIsCaseInsensitiveAndLiteral(t *testing.T) {
 	}
 }
 
-func TestListSnippetsForConnection_ScopedSnippetOnlyForOwnConnection(t *testing.T) {
+func TestListSnippets_ForConnectionScopedSnippetOnlyForOwnConnection(t *testing.T) {
 	db := openTestDB(t)
 
 	connA, err := CreateConnection(db, &Connection{Name: "conn-a", Engine: EnginePostgres, Host: "localhost", Port: 5432})
@@ -201,24 +201,24 @@ func TestListSnippetsForConnection_ScopedSnippetOnlyForOwnConnection(t *testing.
 		t.Fatalf("CreateSnippet failed: %v", err)
 	}
 
-	resultsForA, err := ListSnippetsForConnection(db, connA.ID, EnginePostgres)
+	resultsForA, err := ListSnippets(db, SnippetFilter{ForConnection: &ConnectionScope{ConnectionID: connA.ID, Engine: EnginePostgres}})
 	if err != nil {
-		t.Fatalf("ListSnippetsForConnection(A) failed: %v", err)
+		t.Fatalf("ListSnippets(ForConnection=A) failed: %v", err)
 	}
 	if len(resultsForA) != 1 || resultsForA[0].Name != "a-only" {
 		t.Fatalf("expected connection A to see its own scoped snippet, got %+v", resultsForA)
 	}
 
-	resultsForB, err := ListSnippetsForConnection(db, connB.ID, EnginePostgres)
+	resultsForB, err := ListSnippets(db, SnippetFilter{ForConnection: &ConnectionScope{ConnectionID: connB.ID, Engine: EnginePostgres}})
 	if err != nil {
-		t.Fatalf("ListSnippetsForConnection(B) failed: %v", err)
+		t.Fatalf("ListSnippets(ForConnection=B) failed: %v", err)
 	}
 	if len(resultsForB) != 0 {
 		t.Fatalf("expected connection B to NOT see connection A's scoped snippet, got %+v", resultsForB)
 	}
 }
 
-func TestListSnippetsForConnection_GlobalSnippetRequiresCompatibleEngine(t *testing.T) {
+func TestListSnippets_ForConnectionGlobalSnippetRequiresCompatibleEngine(t *testing.T) {
 	db := openTestDB(t)
 
 	pgConn, err := CreateConnection(db, &Connection{Name: "pg-conn", Engine: EnginePostgres, Host: "localhost", Port: 5432})
@@ -234,17 +234,17 @@ func TestListSnippetsForConnection_GlobalSnippetRequiresCompatibleEngine(t *test
 		t.Fatalf("CreateSnippet failed: %v", err)
 	}
 
-	forPostgres, err := ListSnippetsForConnection(db, pgConn.ID, EnginePostgres)
+	forPostgres, err := ListSnippets(db, SnippetFilter{ForConnection: &ConnectionScope{ConnectionID: pgConn.ID, Engine: EnginePostgres}})
 	if err != nil {
-		t.Fatalf("ListSnippetsForConnection(postgres) failed: %v", err)
+		t.Fatalf("ListSnippets(ForConnection=postgres) failed: %v", err)
 	}
 	if len(forPostgres) != 1 || forPostgres[0].Name != "global-pg-snippet" {
 		t.Fatalf("expected the global Postgres snippet to be usable from a Postgres connection, got %+v", forPostgres)
 	}
 
-	forMySQL, err := ListSnippetsForConnection(db, mysqlConn.ID, EngineMySQL)
+	forMySQL, err := ListSnippets(db, SnippetFilter{ForConnection: &ConnectionScope{ConnectionID: mysqlConn.ID, Engine: EngineMySQL}})
 	if err != nil {
-		t.Fatalf("ListSnippetsForConnection(mysql) failed: %v", err)
+		t.Fatalf("ListSnippets(ForConnection=mysql) failed: %v", err)
 	}
 	if len(forMySQL) != 0 {
 		t.Fatalf("expected a global Postgres snippet to NOT appear for a MySQL connection, got %+v", forMySQL)

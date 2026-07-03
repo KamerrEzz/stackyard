@@ -76,40 +76,6 @@ func ListConnections(db *sql.DB) ([]Connection, error) {
 	return connections, nil
 }
 
-// UpdateConnection replaces every mutable field of an existing Connection in
-// place, keyed by c.ID, and returns the row re-read from the database.
-// LastUsedAt is deliberately not part of this UPDATE — it is only ever
-// changed by TouchConnectionLastUsed, so editing a connection's name/host/
-// credentials never resets or clobbers it. An empty c.ParamsJSON defaults to
-// "{}", same as CreateConnection. Returns a wrapped sql.ErrNoRows if c.ID
-// doesn't exist.
-func UpdateConnection(db *sql.DB, c *Connection) (*Connection, error) {
-	paramsJSON := c.ParamsJSON
-	if paramsJSON == "" {
-		paramsJSON = "{}"
-	}
-
-	res, err := db.Exec(
-		`UPDATE connections
-		 SET name = ?, engine = ?, host = ?, port = ?, username = ?, password_encrypted = ?, database = ?, params_json = ?
-		 WHERE id = ?`,
-		c.Name, c.Engine, c.Host, c.Port, c.Username, c.PasswordEncrypted, c.Database, paramsJSON, c.ID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("storage: update connection %d: %w", c.ID, err)
-	}
-
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("storage: update connection %d: read rows affected: %w", c.ID, err)
-	}
-	if rows == 0 {
-		return nil, fmt.Errorf("storage: update connection %d: %w", c.ID, sql.ErrNoRows)
-	}
-
-	return GetConnection(db, c.ID)
-}
-
 // TouchConnectionLastUsed sets a Connection's LastUsedAt to the current UTC
 // time and returns the row re-read from the database. This is the only
 // storage-layer function that ever changes LastUsedAt — see app.go's
@@ -138,7 +104,7 @@ func TouchConnectionLastUsed(db *sql.DB, id int64) (*Connection, error) {
 // SetConnectionMigrationsFolder sets a Connection's MigrationsFolder to
 // folder and returns the row re-read from the database. This is the only
 // storage-layer function that ever changes MigrationsFolder — kept isolated
-// from CreateConnection/UpdateConnection's generic column list the same way
+// from CreateConnection's generic column list the same way
 // TouchConnectionLastUsed is the sole writer of LastUsedAt, so saving a
 // connection's name/host/credentials from the DB Client's connection form
 // never resets or clobbers the migrations folder a user separately pointed

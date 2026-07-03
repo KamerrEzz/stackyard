@@ -1958,10 +1958,11 @@ func (a *App) ConnectUsingSavedConnection(id int64) (*ConnectionFormFields, erro
 
 // tagsToJSON marshals a snippet form's tags into the JSON array string
 // storage.Snippet.TagsJSON expects (tasks.md 4.6), defaulting a nil or empty
-// slice to "[]" rather than storing an empty string, which is not valid JSON
-// and would fail to round-trip through tagsFromJSON. Mirrors
-// paramsToJSON/paramsFromJSON's raw-JSON-string boundary convention
-// established for Connection.ParamsJSON.
+// slice to "[]" rather than storing an empty string, which is not valid JSON.
+// Mirrors paramsToJSON/paramsFromJSON's raw-JSON-string boundary convention
+// established for Connection.ParamsJSON. The frontend decodes TagsJSON back
+// into a string array itself, so there is no Go-side reverse of this
+// function.
 func tagsToJSON(tags []string) (string, error) {
 	if len(tags) == 0 {
 		return "[]", nil
@@ -1973,19 +1974,6 @@ func tagsToJSON(tags []string) (string, error) {
 	return string(data), nil
 }
 
-// tagsFromJSON reverses tagsToJSON, decoding a stored Snippet's TagsJSON
-// back into []string.
-func tagsFromJSON(raw string) ([]string, error) {
-	if raw == "" {
-		return []string{}, nil
-	}
-	var tags []string
-	if err := json.Unmarshal([]byte(raw), &tags); err != nil {
-		return nil, fmt.Errorf("decode snippet tags: %w", err)
-	}
-	return tags, nil
-}
-
 // SnippetFilter is the Wails-bridge-safe shape of ListSnippets' filter
 // (tasks.md 4.6). It mirrors storage.SnippetFilter/storage.ConnectionScope
 // but flattens the connection-scope into two plain fields rather than a
@@ -1995,12 +1983,13 @@ func tagsFromJSON(raw string) ([]string, error) {
 // connection-scoped filtering: a non-empty Engine narrows the result to
 // snippets usable from a connection of that engine — its own scoped
 // snippets (if ConnectionID is also non-zero) plus compatible-engine global
-// ones — via storage.ListSnippetsForConnection. This makes an ad-hoc
-// (never-saved) connection's tab, whose ConnectionID is always zero, still
-// get correct engine-only scoping instead of silently falling through to
-// the unscoped "every snippet" result. Leaving Engine empty (regardless of
-// ConnectionID) is the only way to get the unscoped, every-snippet result
-// the snippet-management UI needs when no tab is active.
+// ones — by passing a storage.ConnectionScope through to storage.ListSnippets'
+// own ForConnection filter. This makes an ad-hoc (never-saved) connection's
+// tab, whose ConnectionID is always zero, still get correct engine-only
+// scoping instead of silently falling through to the unscoped "every
+// snippet" result. Leaving Engine empty (regardless of ConnectionID) is the
+// only way to get the unscoped, every-snippet result the snippet-management
+// UI needs when no tab is active.
 type SnippetFilter struct {
 	SearchText   string
 	ConnectionID int64

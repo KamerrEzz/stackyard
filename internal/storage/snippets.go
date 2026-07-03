@@ -32,8 +32,9 @@ type ConnectionScope struct {
 //   - ForConnection, when non-nil, applies the compatible-engine scoping
 //     described on ConnectionScope. A nil ForConnection returns snippets
 //     regardless of scope, which is what the snippet-management UI (task
-//     4.6) needs; ListSnippetsForConnection is the convenience wrapper for
-//     the scoped case.
+//     4.6) needs; app.go's ListSnippets sets ForConnection itself for the
+//     scoped case (task 4.7's "run snippet" flow and any "snippets available
+//     here" panel).
 type SnippetFilter struct {
 	SearchText    string
 	ForConnection *ConnectionScope
@@ -41,8 +42,8 @@ type SnippetFilter struct {
 
 // CreateSnippet inserts a new Snippet row and returns it re-read from the
 // database. s.TagsJSON is expected to already be a JSON-encoded array (see
-// app.go's tagsToJSON/tagsFromJSON for the []string <-> JSON boundary); an
-// empty string defaults to "[]", matching Connection.ParamsJSON's existing
+// app.go's tagsToJSON for the []string -> JSON boundary); an empty string
+// defaults to "[]", matching Connection.ParamsJSON's existing
 // empty-defaults convention.
 func CreateSnippet(db *sql.DB, s *Snippet) (*Snippet, error) {
 	tagsJSON := s.TagsJSON
@@ -120,18 +121,6 @@ func ListSnippets(db *sql.DB, filter SnippetFilter) ([]Snippet, error) {
 	}
 
 	return snippets, nil
-}
-
-// ListSnippetsForConnection returns every Snippet usable from connectionID,
-// a connection of the given engine: snippets scoped to exactly that
-// connection, plus global snippets of a compatible (matching) engine. This
-// is the query task 4.7's "run snippet" flow (and any "snippets available
-// here" panel) is expected to call — see SnippetFilter.ForConnection/
-// ConnectionScope for the compatibility rule itself.
-func ListSnippetsForConnection(db *sql.DB, connectionID int64, engine Engine) ([]Snippet, error) {
-	return ListSnippets(db, SnippetFilter{
-		ForConnection: &ConnectionScope{ConnectionID: connectionID, Engine: engine},
-	})
 }
 
 // escapeLike escapes a user-supplied LIKE-pattern fragment's own wildcard
