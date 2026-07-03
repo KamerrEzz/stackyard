@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	"stackyard/internal/docker"
 	"stackyard/internal/netcheck"
 	"stackyard/internal/storage"
+
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
@@ -36,6 +39,16 @@ const (
 	dockerStopTimeout        = 30 * time.Second
 	dockerStatusTimeout      = 15 * time.Second
 	dockerStartupPingTimeout = 3 * time.Second
+
+	// EnvironmentStatusEventName is the Wails event emitted every poll cycle
+	// by the background status watcher (see StartStatusWatcher), carrying a
+	// full docker.EnvironmentStatusSnapshot as its single payload (spec.md
+	// §3.5, tasks.md 2.8).
+	EnvironmentStatusEventName = "environment:status"
+
+	// statusWatchInterval is comfortably under spec.md §3.5's ≤2s refresh
+	// target.
+	statusWatchInterval = 1500 * time.Millisecond
 )
 
 // App struct is the ONLY surface bound to the frontend — every other package
@@ -48,6 +61,14 @@ type App struct {
 
 	docker    *docker.Client
 	dockerErr error
+
+	// statusWatcher* fields guard the background poller StartStatusWatcher
+	// starts and StopStatusWatcher stops (tasks.md 2.8) — see both methods'
+	// doc comments for the synchronization contract.
+	statusWatcherMu      sync.Mutex
+	statusWatcherCancel  context.CancelFunc
+	statusWatcherWG      sync.WaitGroup
+	statusWatcherRunning bool
 }
 
 // NewApp creates a new App application struct
@@ -83,6 +104,8 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) shutdown(_ context.Context) {
+	a.StopStatusWatcher()
+
 	if a.db != nil {
 		_ = a.db.Close()
 	}
@@ -706,6 +729,56 @@ func (a *App) RestartProfile(profileID int64) error {
 	return a.StartProfile(profileID)
 }
 
+// ResetServiceVolume permanently erases a single service's data (spec.md
+// §3.4, tasks.md 2.6): it stops the service's container, removes both the
+// container and its volume, then recreates both fresh via the same
+// startServiceEnvironment/engineStarters dispatch StartProfile already uses.
+// Only this one service's own container and volume (looked up by name/
+// VolumeName) are touched — no profile-wide enumeration, so sibling services
+// in the same profile are never stopped, removed, or otherwise affected.
+//
+// The container itself is removed, not merely stopped: Docker refuses to
+// remove a volume that's still referenced by an existing container, even one
+// that's stopped, so removing only the volume while leaving the old
+// container in place would fail. Removing the container is safe here because
+// startServiceEnvironment recreates it from scratch on the same path an
+// entirely new "Start" already takes.
+func (a *App) ResetServiceVolume(serviceID int64) error {
+	dockerClient, err := a.requireDocker()
+	if err != nil {
+		return err
+	}
+	db, err := a.requireDB()
+	if err != nil {
+		return err
+	}
+
+	svc, err := storage.GetService(db, serviceID)
+	if err != nil {
+		return fmt.Errorf("reset volume for service %d: %w", serviceID, err)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, dockerOpTimeout)
+	defer cancel()
+
+	containerName := docker.ServiceContainerName(svc.ID)
+
+	if err := dockerClient.StopContainer(ctx, containerName); err != nil {
+		return fmt.Errorf("reset volume for service %d: %w", serviceID, err)
+	}
+	if err := dockerClient.RemoveContainer(ctx, containerName); err != nil {
+		return fmt.Errorf("reset volume for service %d: %w", serviceID, err)
+	}
+	if err := dockerClient.RemoveVolume(ctx, svc.VolumeName); err != nil {
+		return fmt.Errorf("reset volume for service %d: %w", serviceID, err)
+	}
+
+	if err := startServiceEnvironment(ctx, dockerClient, *svc); err != nil {
+		return fmt.Errorf("reset volume for service %d: %w", serviceID, err)
+	}
+	return nil
+}
+
 // GetProfileStatus reports an aggregate status across every service's
 // container in the profile:
 //
@@ -756,4 +829,142 @@ func (a *App) GetProfileStatus(profileID int64) (string, error) {
 	default:
 		return "partial", nil
 	}
+}
+
+// StartStatusWatcher starts the background poller that emits
+// EnvironmentStatusEventName every statusWatchInterval with a full
+// docker.EnvironmentStatusSnapshot across every profile/service (spec.md
+// §3.5, tasks.md 2.8). The frontend calls this once when the status
+// dashboard view mounts, matching this project's push-over-polling
+// event-bus design (plan.md §2) — the frontend only ever subscribes via
+// EventsOn, it never calls a bound method on an interval itself.
+//
+// Idempotent: a second call while the watcher is already running is a no-op
+// and returns nil rather than starting a competing poller.
+func (a *App) StartStatusWatcher() error {
+	if _, err := a.requireDocker(); err != nil {
+		return err
+	}
+	if _, err := a.requireDB(); err != nil {
+		return err
+	}
+
+	a.statusWatcherMu.Lock()
+	defer a.statusWatcherMu.Unlock()
+	if a.statusWatcherRunning {
+		return nil
+	}
+
+	watchCtx, cancel := context.WithCancel(a.ctx)
+	a.statusWatcherCancel = cancel
+	a.statusWatcherRunning = true
+
+	a.statusWatcherWG.Add(1)
+	go func() {
+		defer a.statusWatcherWG.Done()
+		a.runStatusWatcher(watchCtx)
+	}()
+
+	return nil
+}
+
+// StopStatusWatcher cancels the background status watcher and blocks until
+// its goroutine has actually exited before returning. It is a no-op — not an
+// error — both when the watcher was never started and when it was already
+// stopped, so calling it from shutdown() is always safe regardless of
+// whether StartStatusWatcher ever ran (including a shutdown that races an
+// in-flight StartStatusWatcher call, since both hold statusWatcherMu).
+func (a *App) StopStatusWatcher() {
+	a.statusWatcherMu.Lock()
+	defer a.statusWatcherMu.Unlock()
+	if !a.statusWatcherRunning {
+		return
+	}
+
+	a.statusWatcherCancel()
+	a.statusWatcherWG.Wait()
+	a.statusWatcherRunning = false
+}
+
+// runStatusWatcher emits one snapshot immediately (so the dashboard has data
+// the moment watching starts, rather than after the first tick's delay),
+// then one every statusWatchInterval until ctx is cancelled by
+// StopStatusWatcher.
+func (a *App) runStatusWatcher(ctx context.Context) {
+	a.emitStatusSnapshot(ctx)
+
+	ticker := time.NewTicker(statusWatchInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.emitStatusSnapshot(ctx)
+		}
+	}
+}
+
+// emitStatusSnapshot builds one snapshot and emits it as
+// EnvironmentStatusEventName. A failure building the snapshot (Docker/DB
+// unreachable this cycle) is silently skipped rather than stopping the
+// watcher — the next tick tries again.
+func (a *App) emitStatusSnapshot(ctx context.Context) {
+	snapshot, err := a.buildStatusSnapshot(ctx)
+	if err != nil {
+		return
+	}
+	wailsruntime.EventsEmit(ctx, EnvironmentStatusEventName, snapshot)
+}
+
+// buildStatusSnapshot re-reads every profile's services and every service's
+// REAL current container state/stats directly from Docker on every call —
+// never cached App state — so it reflects containers started/stopped
+// outside the app within one poll cycle (spec.md §3.5's second acceptance
+// criterion). This is also the method status_watch_integration_test.go calls
+// directly to verify that behavior against a live Docker Engine, bypassing
+// EventsEmit entirely (see that file's doc comment for why).
+func (a *App) buildStatusSnapshot(ctx context.Context) (docker.EnvironmentStatusSnapshot, error) {
+	dockerClient, err := a.requireDocker()
+	if err != nil {
+		return docker.EnvironmentStatusSnapshot{}, err
+	}
+	db, err := a.requireDB()
+	if err != nil {
+		return docker.EnvironmentStatusSnapshot{}, err
+	}
+
+	profiles, err := storage.ListProfiles(db)
+	if err != nil {
+		return docker.EnvironmentStatusSnapshot{}, fmt.Errorf("build status snapshot: %w", err)
+	}
+
+	profileServices := make([]docker.ProfileServices, 0, len(profiles))
+	var containerNames []string
+	for _, p := range profiles {
+		services, err := storage.ListServicesByProfile(db, p.ID)
+		if err != nil {
+			return docker.EnvironmentStatusSnapshot{}, fmt.Errorf("build status snapshot: %w", err)
+		}
+		profileServices = append(profileServices, docker.ProfileServices{Profile: p, Services: services})
+		for _, svc := range services {
+			containerNames = append(containerNames, docker.ServiceContainerName(svc.ID))
+		}
+	}
+
+	snapshotCtx, cancel := context.WithTimeout(ctx, dockerStatusTimeout)
+	defer cancel()
+
+	states := dockerClient.ContainerStatesForNames(snapshotCtx, containerNames)
+
+	runningNames := make([]string, 0, len(containerNames))
+	for _, name := range containerNames {
+		if states[name] == "running" {
+			runningNames = append(runningNames, name)
+		}
+	}
+	stats := dockerClient.StatsForContainers(snapshotCtx, runningNames)
+
+	return docker.BuildEnvironmentStatusSnapshot(profileServices, states, stats), nil
 }

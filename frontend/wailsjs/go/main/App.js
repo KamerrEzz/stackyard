@@ -42,6 +42,10 @@ export function RenameProfile(arg1, arg2) {
   return window['go']['main']['App']['RenameProfile'](arg1, arg2);
 }
 
+export function ResetServiceVolume(arg1) {
+  return window['go']['main']['App']['ResetServiceVolume'](arg1);
+}
+
 export function RestartProfile(arg1) {
   return window['go']['main']['App']['RestartProfile'](arg1);
 }
@@ -50,8 +54,16 @@ export function StartProfile(arg1) {
   return window['go']['main']['App']['StartProfile'](arg1);
 }
 
+export function StartStatusWatcher() {
+  return window['go']['main']['App']['StartStatusWatcher']();
+}
+
 export function StopProfile(arg1) {
   return window['go']['main']['App']['StopProfile'](arg1);
+}
+
+export function StopStatusWatcher() {
+  return window['go']['main']['App']['StopStatusWatcher']();
 }
 
 export function SuggestFreePort(arg1) {

@@ -22,10 +22,16 @@ export function Ping():Promise<string>;
 
 export function RenameProfile(arg1:number,arg2:string):Promise<main.ProfileSummary>;
 
+export function ResetServiceVolume(arg1:number):Promise<void>;
+
 export function RestartProfile(arg1:number):Promise<void>;
 
 export function StartProfile(arg1:number):Promise<void>;
 
+export function StartStatusWatcher():Promise<void>;
+
 export function StopProfile(arg1:number):Promise<void>;
+
+export function StopStatusWatcher():Promise<void>;
 
 export function SuggestFreePort(arg1:number):Promise<number>;

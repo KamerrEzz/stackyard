@@ -11,6 +11,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/errdefs"
@@ -51,6 +52,36 @@ func containerStateFromInspect(inspect container.InspectResponse) string {
 		return "running"
 	}
 	return inspect.State.Status
+}
+
+// ContainerStatesForNames reports ContainerState for every name
+// concurrently, mirroring StatsForContainers' one-call-per-container,
+// no-partial-failure batching (stats.go): a container whose inspect fails is
+// reported as "unknown" in its own entry rather than dropping it from the
+// result or failing the whole batch, so the real-time status dashboard
+// (tasks.md 2.8) can still show every other container's live state.
+func (c *Client) ContainerStatesForNames(ctx context.Context, names []string) map[string]string {
+	results := make(map[string]string, len(names))
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, name := range names {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			state, err := c.ContainerState(ctx, name)
+			if err != nil {
+				state = "unknown"
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			results[name] = state
+		}(name)
+	}
+	wg.Wait()
+
+	return results
 }
 
 // StopContainer stops the named container if it exists and is running. It

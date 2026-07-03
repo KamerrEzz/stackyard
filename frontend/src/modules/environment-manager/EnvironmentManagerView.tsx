@@ -8,6 +8,7 @@ import {
     GetProfileStatus,
     ListProfiles,
     RenameProfile,
+    ResetServiceVolume,
     StartProfile,
     StopProfile,
 } from '../../../wailsjs/go/main/App'
@@ -219,6 +220,27 @@ function EnvironmentManagerView() {
         [setRowBusy],
     )
 
+    const [resettingServiceIds, setResettingServiceIds] = useState<Set<number>>(new Set())
+
+    const handleResetVolume = useCallback(
+        async (profileId: number, serviceId: number) => {
+            setResettingServiceIds((prev) => new Set(prev).add(serviceId))
+            try {
+                await ResetServiceVolume(serviceId)
+            } catch (err) {
+                setRowBusy(profileId, false, String(err))
+            } finally {
+                setResettingServiceIds((prev) => {
+                    const next = new Set(prev)
+                    next.delete(serviceId)
+                    return next
+                })
+                await refreshStatus(profileId)
+            }
+        },
+        [refreshStatus, setRowBusy],
+    )
+
     const handleCreateAndStart = useCallback(async () => {
         const name = newProfileName.trim()
         if (!name || selectedEngines.length === 0) {
@@ -306,11 +328,13 @@ function EnvironmentManagerView() {
                     <ProfileCard
                         key={row.summary.Profile.ID}
                         row={row}
+                        resettingServiceIds={resettingServiceIds}
                         onStart={() => void handleStart(row.summary.Profile.ID)}
                         onStop={() => void handleStop(row.summary.Profile.ID)}
                         onDuplicate={() => void handleDuplicate(row.summary.Profile.ID)}
                         onRename={(newName) => void handleRename(row.summary.Profile.ID, newName)}
                         onDelete={() => void handleDelete(row.summary.Profile.ID)}
+                        onResetVolume={(serviceId) => void handleResetVolume(row.summary.Profile.ID, serviceId)}
                     />
                 ))}
             </div>
@@ -320,14 +344,16 @@ function EnvironmentManagerView() {
 
 interface ProfileCardProps {
     row: ProfileRow
+    resettingServiceIds: Set<number>
     onStart: () => void
     onStop: () => void
     onDuplicate: () => void
     onRename: (newName: string) => void
     onDelete: () => void
+    onResetVolume: (serviceId: number) => void
 }
 
-function ProfileCard({row, onStart, onStop, onDuplicate, onRename, onDelete}: ProfileCardProps) {
+function ProfileCard({row, resettingServiceIds, onStart, onStop, onDuplicate, onRename, onDelete, onResetVolume}: ProfileCardProps) {
     const {summary, status, busy, error} = row
     const [renaming, setRenaming] = useState(false)
     const [nameDraft, setNameDraft] = useState(summary.Profile.Name)
@@ -448,7 +474,16 @@ function ProfileCard({row, onStart, onStop, onDuplicate, onRename, onDelete}: Pr
                         <p className="font-mono text-xs text-ink-400">
                             {engineLabel(service.Engine)} · localhost:{service.HostPort}
                         </p>
-                        {status === 'running' && <CopyConnectionStringButton serviceId={service.ID} />}
+                        <div className="flex items-center gap-2">
+                            {status === 'running' && <CopyConnectionStringButton serviceId={service.ID} />}
+                            <ResetVolumeButton
+                                engineName={engineLabel(service.Engine)}
+                                hostPort={service.HostPort}
+                                busy={busy || resettingServiceIds.has(service.ID)}
+                                resetting={resettingServiceIds.has(service.ID)}
+                                onResetVolume={() => onResetVolume(service.ID)}
+                            />
+                        </div>
                     </div>
                 ))}
             </div>
@@ -507,6 +542,39 @@ function CopyConnectionStringButton({serviceId}: CopyConnectionStringButtonProps
             }`}
         >
             {label}
+        </button>
+    )
+}
+
+interface ResetVolumeButtonProps {
+    engineName: string
+    hostPort: number
+    busy: boolean
+    resetting: boolean
+    onResetVolume: () => void
+}
+
+function ResetVolumeButton({engineName, hostPort, busy, resetting, onResetVolume}: ResetVolumeButtonProps) {
+    const requestReset = useCallback(() => {
+        const confirmed = window.confirm(
+            `Reset volume for ${engineName} (localhost:${hostPort})?\n\n` +
+                'This PERMANENTLY DELETES all data in this service. It will be stopped, its Docker volume ' +
+                'erased, and a fresh empty one created on next start. This cannot be undone. Other services ' +
+                'in this profile are not affected and stay running.',
+        )
+        if (confirmed) {
+            onResetVolume()
+        }
+    }, [engineName, hostPort, onResetVolume])
+
+    return (
+        <button
+            type="button"
+            onClick={requestReset}
+            disabled={busy}
+            className="rounded border border-red-800 px-3 py-1 text-xs text-red-400 transition-colors hover:border-red-500 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+            {resetting ? 'Resetting…' : 'Reset volume'}
         </button>
     )
 }

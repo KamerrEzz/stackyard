@@ -662,3 +662,79 @@ throwaway Go program that the real app-data SQLite DB has zero leaked
 profiles from this session. The actual wizard UI click-through should
 still get a manual pass before Phase 2 is considered fully closed,
 similar to task 1.7's pass for Phase 1.
+
+---
+
+## Session 3 continued — Reset volume (2.6) and status dashboard (2.8)
+
+Both tasks ran in parallel and both landed clean, but they concurrently
+edited `app.go` (2.6 added `ResetServiceVolume`, 2.8 added
+`StartStatusWatcher`/`StopStatusWatcher` plus new imports) — worth
+flagging as a process note even though the merge turned out coherent:
+**two parallel tasks editing the same shared file is a real collision
+risk**, tolerable here only because both diffs were additive and the
+final `go build`/`go vet`/`go test ./...` (including the full
+`-tags=integration` suite) were reverified clean *after* both landed, not
+assumed clean from each task's own isolated report.
+
+### Reset volume (2.6) — `app.go` + `reset_volume_integration_test.go`
+
+- `ResetServiceVolume(serviceID int64) error`: stop → `RemoveContainer` →
+  `RemoveVolume` → recreate via `startServiceEnvironment` (the same
+  dispatch `StartProfile` uses — note this replaced whatever table task
+  2.4 first introduced; the name in code is `startServiceEnvironment`,
+  not "`engineStarters`" as earlier notes in this document called it —
+  if a name mismatch is confusing later, this is why).
+- **Volume removal requires removing the container first**, not just
+  stopping it — Docker refuses `volume rm` while a stopped container
+  still references it. This is why the sequence is stop→remove
+  container→remove volume, not stop→remove volume.
+- **Sibling isolation was proven, not assumed**: the integration test
+  starts a target service plus a sibling in the same profile, polls the
+  sibling's container state every 150ms *while* the reset runs on the
+  target, and confirms the sibling stayed `running` throughout — this is
+  spec.md §3.4's core acceptance criterion, verified under concurrent
+  load, not just "the code doesn't touch the sibling's ID."
+- **Freshness of the recreated volume was proven** via a marker value
+  written before reset (through a hand-rolled minimal RESP client — no
+  Redis driver exists in `go.mod` yet since Phase 3+ hasn't started) that
+  was confirmed gone after the reset.
+- Test IDs 999008/999009 — the next new integration test file should
+  grep the whole repo for every `9990\d\d` literal first (the running
+  convention noted earlier in this document had already drifted once by
+  the time this task started; don't trust the last-recorded number
+  alone).
+
+### Real-time status dashboard (2.8) — `internal/docker/snapshot.go` +
+`StatusDashboard.tsx`
+
+- **Event contract**: Wails event `"environment:status"`, emitted every
+  ~1.5s (under spec.md §3.5's ≤2s target). Payload has no JSON tags, so
+  keys arrive PascalCase on the frontend:
+  `{"Profiles":[{"ProfileID","ProfileName","Services":[{"ServiceID","ServiceName","Engine","EngineVersion","State","HostPort","CPUPercent","MemoryUsageBytes","MemoryLimitBytes","MemoryPercent","StatsAvailable"}]}]}`.
+- **Poller lifecycle**: `StartStatusWatcher()`/`StopStatusWatcher()` bound
+  methods; a mutex-guarded running flag + stored `context.CancelFunc` +
+  `sync.WaitGroup`. `Start` is idempotent (calling it twice doesn't spawn
+  two pollers); `Stop` cancels the context and blocks on `wg.Wait()` so
+  no goroutine outlives the call. `shutdown()` calls `StopStatusWatcher()`
+  before closing the DB/Docker clients, so there's no window where the
+  poller could touch a closed Docker client.
+- **Watching starts lazily on dashboard mount**, not in `startup(ctx)` —
+  deliberate: Docker isn't polled every ~1.5s while the user is in the DB
+  Client module with the dashboard never opened.
+- **"Reflects containers stopped outside the app" was proven for real**:
+  the integration test starts a container, confirms a snapshot poll
+  reports it running with plausible stats, stops it via a direct
+  `exec.Command("docker","stop",...)` call that bypasses the app's own
+  `StopProfile` entirely (simulating a user running `docker stop` from a
+  separate terminal), and confirms the next poll reports it stopped.
+- **Dashboard placement**: a third top-level sidebar item ("Status"),
+  since `EnvironmentManagerView.tsx` was off-limits (task 2.6 was
+  concurrently making additive edits there). Clicking a running service
+  row reveals its connection string inline (distinct UX from the
+  existing copy-to-clipboard button in the Environments view, per
+  spec.md §3.5's specific "reveals... inline" wording vs. §3.3's
+  "copies to clipboard" wording for the other view).
+- **Known minor gap, not fixed**: if a service's connection-string row is
+  expanded on the dashboard and that service then stops, the row doesn't
+  auto-collapse. Cosmetic; flagged for an optional follow-up.

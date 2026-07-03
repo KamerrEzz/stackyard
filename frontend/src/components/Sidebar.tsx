@@ -1,4 +1,4 @@
-export type ViewKey = 'environments' | 'db-client'
+export type ViewKey = 'environments' | 'db-client' | 'status'
 
 interface NavItem {
     key: ViewKey
@@ -8,6 +8,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
     {key: 'environments', label: 'Environments'},
     {key: 'db-client', label: 'DB Client'},
+    {key: 'status', label: 'Status'},
 ]
 
 interface SidebarProps {
