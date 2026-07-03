@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useRef, useState} from 'react'
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import {
     CheckProfilePortConflict,
     CreateProfile,
@@ -13,8 +13,13 @@ import {
     StopProfile,
 } from '../../../wailsjs/go/main/App'
 import type {main} from '../../../wailsjs/go/models'
-
-type Engine = 'postgres' | 'mysql' | 'mongodb' | 'redis'
+import {
+    credentialValidationMessage,
+    validateEngineCredentials,
+    type CredentialValidationError,
+    type Engine,
+    type EngineCredentials,
+} from './credentialValidation'
 
 interface EngineOption {
     engine: Engine
@@ -76,6 +81,17 @@ function statusColor(status: ProfileStatus): string {
     }
 }
 
+const EMPTY_CREDENTIALS: EngineCredentials = {username: '', password: '', dbName: ''}
+
+function emptyCredentialsByEngine(): Record<Engine, EngineCredentials> {
+    return {
+        postgres: {...EMPTY_CREDENTIALS},
+        mysql: {...EMPTY_CREDENTIALS},
+        mongodb: {...EMPTY_CREDENTIALS},
+        redis: {...EMPTY_CREDENTIALS},
+    }
+}
+
 function EnvironmentManagerView() {
     const [rows, setRows] = useState<ProfileRow[]>([])
     const [listError, setListError] = useState<string | null>(null)
@@ -83,12 +99,43 @@ function EnvironmentManagerView() {
     const [selectedEngines, setSelectedEngines] = useState<Engine[]>([])
     const [creating, setCreating] = useState(false)
     const [createError, setCreateError] = useState<string | null>(null)
+    const [credentialsByEngine, setCredentialsByEngine] = useState<Record<Engine, EngineCredentials>>(
+        emptyCredentialsByEngine,
+    )
+    const [expandedCredentials, setExpandedCredentials] = useState<Set<Engine>>(new Set())
 
     const toggleEngine = useCallback((engine: Engine) => {
         setSelectedEngines((prev) =>
             prev.includes(engine) ? prev.filter((e) => e !== engine) : [...prev, engine],
         )
     }, [])
+
+    const toggleCredentialsExpanded = useCallback((engine: Engine) => {
+        setExpandedCredentials((prev) => {
+            const next = new Set(prev)
+            if (next.has(engine)) {
+                next.delete(engine)
+            } else {
+                next.add(engine)
+            }
+            return next
+        })
+    }, [])
+
+    const updateCredential = useCallback((engine: Engine, field: keyof EngineCredentials, value: string) => {
+        setCredentialsByEngine((prev) => ({...prev, [engine]: {...prev[engine], [field]: value}}))
+    }, [])
+
+    const credentialErrors = useMemo(() => {
+        const errors = new Map<Engine, CredentialValidationError>()
+        for (const engine of selectedEngines) {
+            const error = validateEngineCredentials(engine, credentialsByEngine[engine])
+            if (error) {
+                errors.set(engine, error)
+            }
+        }
+        return errors
+    }, [selectedEngines, credentialsByEngine])
 
     const refreshStatus = useCallback(async (profileId: number) => {
         try {
@@ -243,24 +290,35 @@ function EnvironmentManagerView() {
 
     const handleCreateAndStart = useCallback(async () => {
         const name = newProfileName.trim()
-        if (!name || selectedEngines.length === 0) {
+        if (!name || selectedEngines.length === 0 || credentialErrors.size > 0) {
             return
         }
         setCreating(true)
         setCreateError(null)
         try {
-            const services = selectedEngines.map((engine) => ({Engine: engine, HostPort: 0}))
+            const services = selectedEngines.map((engine) => {
+                const creds = credentialsByEngine[engine]
+                return {
+                    Engine: engine,
+                    HostPort: 0,
+                    Username: creds.username.trim(),
+                    Password: creds.password.trim(),
+                    DBName: creds.dbName.trim(),
+                }
+            })
             const summary = await CreateProfile(name, services)
             setRows((prev) => [...prev, summaryToRow(summary)])
             setNewProfileName('')
             setSelectedEngines([])
+            setCredentialsByEngine(emptyCredentialsByEngine())
+            setExpandedCredentials(new Set())
             await handleStart(summary.Profile.ID)
         } catch (err) {
             setCreateError(String(err))
         } finally {
             setCreating(false)
         }
-    }, [handleStart, newProfileName, selectedEngines])
+    }, [credentialErrors, credentialsByEngine, handleStart, newProfileName, selectedEngines])
 
     return (
         <div className="flex flex-col gap-6">
@@ -289,30 +347,33 @@ function EnvironmentManagerView() {
                     <button
                         type="button"
                         onClick={() => void handleCreateAndStart()}
-                        disabled={creating || newProfileName.trim().length === 0 || selectedEngines.length === 0}
+                        disabled={
+                            creating ||
+                            newProfileName.trim().length === 0 ||
+                            selectedEngines.length === 0 ||
+                            credentialErrors.size > 0
+                        }
                         className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                         {creating ? 'Creating…' : 'Create & Start'}
                     </button>
                 </div>
 
-                <div className="flex flex-col gap-1">
+                <div className="flex flex-col gap-2">
                     <span className="text-xs uppercase tracking-widest text-ink-400">Engines</span>
-                    <div className="flex flex-wrap gap-4">
+                    <div className="flex flex-col gap-2">
                         {ENGINE_OPTIONS.map((option) => (
-                            <label
+                            <EngineSelectionRow
                                 key={option.engine}
-                                className="flex items-center gap-2 text-sm text-ink-200"
-                            >
-                                <input
-                                    type="checkbox"
-                                    checked={selectedEngines.includes(option.engine)}
-                                    onChange={() => toggleEngine(option.engine)}
-                                    className="h-4 w-4 rounded border-ink-700 bg-ink-950 text-brass-500 focus:ring-brass-500"
-                                />
-                                {option.label}
-                                <span className="font-mono text-xs text-ink-500">:{option.defaultPort}</span>
-                            </label>
+                                option={option}
+                                selected={selectedEngines.includes(option.engine)}
+                                expanded={expandedCredentials.has(option.engine)}
+                                credentials={credentialsByEngine[option.engine]}
+                                error={credentialErrors.get(option.engine) ?? null}
+                                onToggleSelected={() => toggleEngine(option.engine)}
+                                onToggleExpanded={() => toggleCredentialsExpanded(option.engine)}
+                                onCredentialChange={(field, value) => updateCredential(option.engine, field, value)}
+                            />
                         ))}
                     </div>
                 </div>
@@ -338,6 +399,90 @@ function EnvironmentManagerView() {
                     />
                 ))}
             </div>
+        </div>
+    )
+}
+
+interface EngineSelectionRowProps {
+    option: EngineOption
+    selected: boolean
+    expanded: boolean
+    credentials: EngineCredentials
+    error: CredentialValidationError | null
+    onToggleSelected: () => void
+    onToggleExpanded: () => void
+    onCredentialChange: (field: keyof EngineCredentials, value: string) => void
+}
+
+function EngineSelectionRow({
+    option,
+    selected,
+    expanded,
+    credentials,
+    error,
+    onToggleSelected,
+    onToggleExpanded,
+    onCredentialChange,
+}: EngineSelectionRowProps) {
+    const showDBNameField = option.engine !== 'redis'
+    const showUsernameField = option.engine !== 'redis'
+
+    return (
+        <div className="flex flex-col gap-2 rounded border border-ink-800/60 px-2 py-1.5">
+            <div className="flex items-center gap-3">
+                <label className="flex flex-1 items-center gap-2 text-sm text-ink-200">
+                    <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={onToggleSelected}
+                        className="h-4 w-4 rounded border-ink-700 bg-ink-950 text-brass-500 focus:ring-brass-500"
+                    />
+                    {option.label}
+                    <span className="font-mono text-xs text-ink-500">:{option.defaultPort}</span>
+                </label>
+                {selected && (
+                    <button
+                        type="button"
+                        onClick={onToggleExpanded}
+                        className="text-xs text-ink-400 underline decoration-dotted hover:text-brass-400"
+                    >
+                        {expanded ? 'Hide credentials' : 'Custom credentials…'}
+                    </button>
+                )}
+            </div>
+
+            {selected && expanded && (
+                <div className="flex flex-wrap items-start gap-2 pl-6">
+                    {showUsernameField && (
+                        <input
+                            type="text"
+                            value={credentials.username}
+                            onChange={(e) => onCredentialChange('username', e.target.value)}
+                            placeholder="Username (default)"
+                            className="w-40 rounded border border-ink-700 bg-ink-950 px-2 py-1 text-xs text-ink-100 outline-none focus:border-brass-500"
+                        />
+                    )}
+                    <input
+                        type="password"
+                        value={credentials.password}
+                        onChange={(e) => onCredentialChange('password', e.target.value)}
+                        placeholder="Password (default)"
+                        className="w-40 rounded border border-ink-700 bg-ink-950 px-2 py-1 text-xs text-ink-100 outline-none focus:border-brass-500"
+                    />
+                    {showDBNameField && (
+                        <input
+                            type="text"
+                            value={credentials.dbName}
+                            onChange={(e) => onCredentialChange('dbName', e.target.value)}
+                            placeholder="Database name (default)"
+                            className="w-44 rounded border border-ink-700 bg-ink-950 px-2 py-1 text-xs text-ink-100 outline-none focus:border-brass-500"
+                        />
+                    )}
+                </div>
+            )}
+            {selected && error && (
+                <p className="pl-6 text-xs text-red-400">{credentialValidationMessage(error, option.label)}</p>
+            )}
         </div>
     )
 }
