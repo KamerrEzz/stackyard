@@ -1,5 +1,21 @@
 export namespace main {
 	
+	export class PortConflictInfo {
+	    HasConflict: boolean;
+	    Port: number;
+	    SuggestedPort: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PortConflictInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.HasConflict = source["HasConflict"];
+	        this.Port = source["Port"];
+	        this.SuggestedPort = source["SuggestedPort"];
+	    }
+	}
 	export class ProfileSummary {
 	    Profile: storage.Profile;
 	    Services: storage.Service[];

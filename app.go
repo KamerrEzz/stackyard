@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"stackyard/internal/docker"
+	"stackyard/internal/netcheck"
 	"stackyard/internal/storage"
 )
 
@@ -213,31 +214,50 @@ func (a *App) CreateProfile(name string) (*ProfileSummary, error) {
 	return &ProfileSummary{Profile: *profile, Services: []storage.Service{*created}}, nil
 }
 
+// GetConnectionString returns the canonical connection URL for a service
+// (spec.md §3.3, tasks.md 1.6). Phase 1 MVP is Postgres-only (plan.md §6);
+// calling this for a non-Postgres service returns an error naming the
+// unsupported engine, matching StartProfile's convention.
+//
+// The string is built fresh from the Service row read from storage on every
+// call — nothing is cached — so it reflects whatever the user last saved for
+// credentials/port (spec.md §3.3's "update immediately after edit+restart"
+// criterion). The frontend already holds the same Service fields in its
+// profile-list state (ProfileSummary.Services), so this bound method exists
+// mainly to keep the format logic in one place (internal/docker/
+// connstring.go) rather than duplicated in TypeScript.
+func (a *App) GetConnectionString(serviceID int64) (string, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return "", err
+	}
+
+	svc, err := storage.GetService(db, serviceID)
+	if err != nil {
+		return "", fmt.Errorf("get connection string for service %d: %w", serviceID, err)
+	}
+
+	if svc.Engine != storage.EnginePostgres {
+		return "", fmt.Errorf("get connection string for service %d: engine %q is not supported yet", serviceID, svc.Engine)
+	}
+
+	return docker.PostgresConnectionString(*svc), nil
+}
+
 // nextFreeHostPort returns the smallest port >= defaultPort not already used
 // by any Stackyard-managed service recorded in local storage.
 //
 // Judgment call: this only checks ports Stackyard itself has already handed
 // out — it does NOT probe the OS/network for arbitrary in-use ports (that
-// real check, plus surfacing a suggested free port in the UI instead of a
-// raw Docker error, is task 1.5). It's still worth doing here, cheaply,
-// because without it every new default profile would collide on 5432 the
-// moment a second one is created, which would be an obviously bad first
-// impression to ship even for an admittedly temporary MVP default.
+// real check now exists as netcheck.IsPortFree + SuggestFreePort below,
+// task 1.5). It's still worth doing here, cheaply, because without it every
+// new default profile would collide on 5432 the moment a second one is
+// created, which would be an obviously bad first impression to ship even
+// for an admittedly temporary MVP default.
 func (a *App) nextFreeHostPort(db *sql.DB, defaultPort int) (int, error) {
-	profiles, err := storage.ListProfiles(db)
+	used, err := usedHostPorts(db)
 	if err != nil {
 		return 0, err
-	}
-
-	used := make(map[int]bool)
-	for _, p := range profiles {
-		services, err := storage.ListServicesByProfile(db, p.ID)
-		if err != nil {
-			return 0, err
-		}
-		for _, s := range services {
-			used[s.HostPort] = true
-		}
 	}
 
 	port := defaultPort
@@ -245,6 +265,152 @@ func (a *App) nextFreeHostPort(db *sql.DB, defaultPort int) (int, error) {
 		port++
 	}
 	return port, nil
+}
+
+// usedHostPorts returns the set of host ports already recorded against any
+// Stackyard-managed service, across every profile. Shared by
+// nextFreeHostPort (CreateProfile's cheap self-collision avoidance) and
+// SuggestFreePort (task 1.5's real suggestion, which combines this with an
+// actual OS-level probe) so both draw from a single source of truth for
+// "what has Stackyard itself already handed out."
+func usedHostPorts(db *sql.DB) (map[int]bool, error) {
+	profiles, err := storage.ListProfiles(db)
+	if err != nil {
+		return nil, err
+	}
+
+	used := make(map[int]bool)
+	for _, p := range profiles {
+		services, err := storage.ListServicesByProfile(db, p.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range services {
+			used[s.HostPort] = true
+		}
+	}
+	return used, nil
+}
+
+// maxPortScanAttempts bounds SuggestFreePort's upward scan so a systemic
+// problem (e.g. every bind failing in some restricted sandbox/CI
+// environment) surfaces as a clear error instead of looping indefinitely.
+const maxPortScanAttempts = 1000
+
+// CheckPortAvailable reports whether port is free to bind at the OS level
+// right now (internal/netcheck's real TCP probe) — a lightweight yes/no for
+// an arbitrary port, with no per-service "own container already running"
+// exemption logic involved (that exemption only makes sense in the context
+// of a specific service's own container; see CheckProfilePortConflict for
+// that check). The error return exists for API-shape consistency with
+// Wails' other bound methods and to leave room for a future OS-permission
+// failure mode; today it is always nil.
+func (a *App) CheckPortAvailable(port int) (bool, error) {
+	return netcheck.IsPortFree(port), nil
+}
+
+// SuggestFreePort scans upward from startingFrom and returns the first port
+// that is BOTH free at the OS level (netcheck.IsPortFree) AND not already
+// recorded as another Stackyard service's host port (usedHostPorts) — so a
+// suggestion surfaced in the UI doesn't send the user straight into a
+// second collision with one of their own other profiles.
+func (a *App) SuggestFreePort(startingFrom int) (int, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return 0, err
+	}
+
+	used, err := usedHostPorts(db)
+	if err != nil {
+		return 0, fmt.Errorf("suggest free port: %w", err)
+	}
+
+	port := startingFrom
+	for attempts := 0; attempts < maxPortScanAttempts; attempts++ {
+		if !used[port] && netcheck.IsPortFree(port) {
+			return port, nil
+		}
+		port++
+	}
+	return 0, fmt.Errorf("suggest free port: no free port found scanning from %d (%d attempts)", startingFrom, maxPortScanAttempts)
+}
+
+// PortConflictInfo is what the frontend receives from
+// CheckProfilePortConflict — enough to render "port 5432 is already in use;
+// try 5433 instead" without the UI ever having to parse a raw Docker daemon
+// error string (spec.md §3.2's acceptance criterion for this task).
+type PortConflictInfo struct {
+	HasConflict bool
+	Port        int
+	// SuggestedPort is 0 when HasConflict is false, or when a suggestion
+	// couldn't be computed for some reason (storage unavailable, no free
+	// port found within the scan bound) — the frontend treats 0 as "no
+	// suggestion available" rather than a literal port number.
+	SuggestedPort int
+}
+
+// CheckProfilePortConflict is task 1.5's pre-start check: the frontend
+// calls this BEFORE StartProfile so a port conflict can be shown inline
+// with a suggested alternative, instead of only surfacing after Start
+// already failed. StartProfile also re-runs the same check itself (see its
+// doc comment) as defense in depth, so the guarantee holds even if the
+// frontend's pre-check is skipped, stale, or races with something else
+// grabbing the port in between the two calls.
+//
+// Phase 1 MVP only has Postgres services; a profile with none (shouldn't
+// happen once created via CreateProfile) reports no conflict since there is
+// nothing to start.
+func (a *App) CheckProfilePortConflict(profileID int64) (*PortConflictInfo, error) {
+	dockerClient, err := a.requireDocker()
+	if err != nil {
+		return nil, err
+	}
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+
+	services, err := storage.ListServicesByProfile(db, profileID)
+	if err != nil {
+		return nil, fmt.Errorf("check port conflict for profile %d: %w", profileID, err)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, dockerStatusTimeout)
+	defer cancel()
+
+	for _, svc := range services {
+		info, err := a.checkServicePortConflict(ctx, dockerClient, svc)
+		if err != nil {
+			return nil, fmt.Errorf("check port conflict for profile %d: %w", profileID, err)
+		}
+		if info.HasConflict {
+			return info, nil
+		}
+	}
+
+	return &PortConflictInfo{HasConflict: false}, nil
+}
+
+// checkServicePortConflict centralizes task 1.5's per-service conflict
+// check plus suggested-alternative lookup, shared by CheckProfilePortConflict
+// (the frontend's pre-start check) and StartProfile (backend defense in
+// depth) so the two can never disagree about what counts as a conflict.
+func (a *App) checkServicePortConflict(ctx context.Context, dockerClient *docker.Client, svc storage.Service) (*PortConflictInfo, error) {
+	containerName := docker.ServiceContainerName(svc.ID)
+
+	result, err := dockerClient.CheckServicePortConflict(ctx, svc.HostPort, containerName)
+	if err != nil {
+		return nil, err
+	}
+	if !result.Conflict {
+		return &PortConflictInfo{HasConflict: false}, nil
+	}
+
+	info := &PortConflictInfo{HasConflict: true, Port: svc.HostPort}
+	if suggested, sErr := a.SuggestFreePort(svc.HostPort + 1); sErr == nil {
+		info.SuggestedPort = suggested
+	}
+	return info, nil
 }
 
 // StartProfile starts every service in the profile, creating Docker
@@ -256,6 +422,15 @@ func (a *App) nextFreeHostPort(db *sql.DB, defaultPort int) (int, error) {
 // containing a non-Postgres engine is not reachable from today's UI, but if
 // one ever exists, this returns an error naming the unsupported engine
 // rather than silently skipping it.
+//
+// Before attempting to start each service, this re-runs the same
+// port-conflict check CheckProfilePortConflict exposes to the frontend
+// (task 1.5, spec.md §3.2). This is deliberate defense in depth, not
+// redundant belt-and-suspenders busywork: if the frontend's pre-check was
+// skipped, is stale, or a conflict appeared in the gap between the two
+// calls, StartProfile still fails with an actionable "port N is already in
+// use, try M instead" message instead of letting Docker's raw bind error
+// reach the user.
 func (a *App) StartProfile(profileID int64) error {
 	dockerClient, err := a.requireDocker()
 	if err != nil {
@@ -281,6 +456,18 @@ func (a *App) StartProfile(profileID int64) error {
 		if svc.Engine != storage.EnginePostgres {
 			return fmt.Errorf("start profile %d: engine %q is not supported yet", profileID, svc.Engine)
 		}
+
+		conflict, err := a.checkServicePortConflict(ctx, dockerClient, svc)
+		if err != nil {
+			return fmt.Errorf("start profile %d: %w", profileID, err)
+		}
+		if conflict.HasConflict {
+			if conflict.SuggestedPort > 0 {
+				return fmt.Errorf("start profile %d: port %d is already in use by another process — try port %d instead", profileID, conflict.Port, conflict.SuggestedPort)
+			}
+			return fmt.Errorf("start profile %d: port %d is already in use by another process", profileID, conflict.Port)
+		}
+
 		if err := dockerClient.StartPostgresEnvironment(ctx, svc); err != nil {
 			return fmt.Errorf("start profile %d: %w", profileID, err)
 		}

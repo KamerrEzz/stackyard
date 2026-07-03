@@ -1,6 +1,8 @@
-import {useCallback, useEffect, useState} from 'react'
+import {useCallback, useEffect, useRef, useState} from 'react'
 import {
+    CheckProfilePortConflict,
     CreateProfile,
+    GetConnectionString,
     GetProfileStatus,
     ListProfiles,
     StartProfile,
@@ -9,8 +11,8 @@ import {
 import type {main} from '../../../wailsjs/go/models'
 
 // Task 1.4 scope: Postgres-only profile list + Start/Stop (spec.md §3.1/
-// §3.2). No port-conflict pre-check UX (task 1.5), no connection-string
-// copy (task 1.6), no multi-engine wizard (task 2.4, Phase 2) — all
+// §3.2). Task 1.5 (port-conflict pre-check) and task 1.6 (connection-string
+// copy) are implemented below. No multi-engine wizard (task 2.4, Phase 2) —
 // deliberately out of scope here.
 
 type ProfileStatus = 'running' | 'stopped' | 'partial' | 'unknown' | 'loading'
@@ -107,6 +109,27 @@ function EnvironmentManagerView() {
     const handleStart = useCallback(
         async (profileId: number) => {
             setRowBusy(profileId, true)
+
+            // Task 1.5 / spec.md §3.2: detect a port conflict BEFORE
+            // attempting Start, so the user sees "port 5432 is already in
+            // use — try 5433" instead of a raw Docker bind error. StartProfile
+            // itself re-checks the same thing server-side (defense in
+            // depth, see app.go), so skipping this pre-check on error here
+            // still leaves that guarantee intact.
+            try {
+                const conflict = await CheckProfilePortConflict(profileId)
+                if (conflict.HasConflict) {
+                    const suggestion =
+                        conflict.SuggestedPort > 0 ? ` Try port ${conflict.SuggestedPort} instead.` : ''
+                    setRowBusy(profileId, false, `Port ${conflict.Port} is already in use by another process.${suggestion}`)
+                    return
+                }
+            } catch {
+                // If the pre-check itself fails (e.g. Docker unreachable),
+                // fall through to StartProfile — it surfaces its own clear
+                // error (requireDocker) rather than silently blocking Start.
+            }
+
             try {
                 await StartProfile(profileId)
             } catch (err) {
@@ -230,6 +253,9 @@ function ProfileCard({row, onStart, onStop}: ProfileCardProps) {
                 </div>
                 <div className="flex items-center gap-3">
                     <span className={`text-xs font-medium ${statusColor(status)}`}>{statusLabel(status)}</span>
+                    {status === 'running' && postgresService && (
+                        <CopyConnectionStringButton serviceId={postgresService.ID} />
+                    )}
                     <button
                         type="button"
                         onClick={onStart}
@@ -250,6 +276,70 @@ function ProfileCard({row, onStart, onStop}: ProfileCardProps) {
             </div>
             {error && <p className="text-xs text-red-400">{error}</p>}
         </div>
+    )
+}
+
+// CONFIRMATION_MS is how long the transient "Copied!" acknowledgment stays
+// visible (spec.md §3.3's "toast/inline confirmation" — a full toast/
+// notification library is explicitly not required for this task).
+const CONFIRMATION_MS = 2000
+
+interface CopyConnectionStringButtonProps {
+    serviceId: number
+}
+
+// CopyConnectionStringButton fetches the connection string fresh from the Go
+// backend (GetConnectionString — see app.go/internal/docker/connstring.go)
+// on every click, so it's never a stale/cached value even if credentials or
+// the port changed since the last render (spec.md §3.3's third acceptance
+// criterion). One click copies it to the clipboard via the Wails webview's
+// navigator.clipboard and shows an inline "Copied!" confirmation for
+// CONFIRMATION_MS.
+function CopyConnectionStringButton({serviceId}: CopyConnectionStringButtonProps) {
+    const [state, setState] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
+    const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+    useEffect(() => {
+        return () => {
+            if (timeoutRef.current) {
+                clearTimeout(timeoutRef.current)
+            }
+        }
+    }, [])
+
+    const handleCopy = useCallback(async () => {
+        setState('copying')
+        try {
+            const connectionString = await GetConnectionString(serviceId)
+            await navigator.clipboard.writeText(connectionString)
+            setState('copied')
+        } catch {
+            setState('error')
+        } finally {
+            if (timeoutRef.current) {
+                clearTimeout(timeoutRef.current)
+            }
+            timeoutRef.current = setTimeout(() => setState('idle'), CONFIRMATION_MS)
+        }
+    }, [serviceId])
+
+    const label = state === 'copied' ? 'Copied!' : state === 'error' ? 'Copy failed' : 'Copy connection string'
+
+    return (
+        <button
+            type="button"
+            onClick={() => void handleCopy()}
+            disabled={state === 'copying'}
+            className={`rounded border px-3 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                state === 'copied'
+                    ? 'border-emerald-600 text-emerald-400'
+                    : state === 'error'
+                      ? 'border-red-600 text-red-400'
+                      : 'border-ink-700 text-ink-200 hover:border-brass-500 hover:text-brass-400'
+            }`}
+        >
+            {label}
+        </button>
     )
 }
 
