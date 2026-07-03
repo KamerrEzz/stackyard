@@ -154,10 +154,10 @@ code surface with the editable-grid work above.
 
 ## Phase 8 — Migrations (Postgres + MySQL)
 
-- [ ] **8.1** `internal/migrations`: scaffold "create migration" (paired
+- [x] **8.1** `internal/migrations`: scaffold "create migration" (paired
       timestamped up/down files) tied to a connection profile's chosen
       folder.
-- [ ] **8.2** `schema_migrations` tracking-table bootstrap inside the
+- [x] **8.2** `schema_migrations` tracking-table bootstrap inside the
       target database on first use (plan.md §4).
 - [ ] **8.3** "Apply": run all pending migrations in order; verify a
       mid-run failure leaves tracking state accurate and surfaces the DB

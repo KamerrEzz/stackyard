@@ -2823,8 +2823,94 @@ pnpm run build
 pnpm run test
 ```
 
-**Next steps:** Phase 8 — Migrations (Postgres + MySQL only): scaffold
-paired up/down migration files tied to a connection profile's chosen
-folder (8.1), `schema_migrations` tracking-table bootstrap inside the
-target database (8.2), "Apply"/"Rollback" (8.3-8.4), and a Migrations UI
-panel (8.5).
+---
+
+## Session 13 — Phase 8 begins: Migrations scaffolding + tracking table (8.1-8.2)
+
+Genuine sequential chain, not forced parallelism — 8.3 (Apply) needs
+both the file-discovery/versioning scheme (8.1) and the tracking table
+(8.2) to already exist, so these two were bundled into one task
+specifically to keep their shared ID scheme coherent (unlike Session
+12's export/import split, where two independently-converging agents
+were fine because the coordination surface was a single bit, not a
+whole versioning scheme).
+
+### Naming/versioning convention (binding for 8.3-8.5)
+
+`<14-digit UTC timestamp>_<slug>.up.sql` / `.down.sql`, e.g.
+`20260703120000_create_users_table.up.sql`. The timestamp
+(`time.Now().UTC().Format("20060102150405")`) is both lexically
+sortable as a filename AND numerically parseable as `Migration.Version
+int64` — `DiscoverMigrations` sorts purely by parsed `Version`, never by
+file mtime (explicitly tested), ignores any file not matching the
+pattern, and hard-errors if a version+slug pair is missing its up OR
+down half (8.3/8.4 must never be handed an incomplete migration).
+Two `CreateMigration` calls in the same second for the same folder
+collide (1-second timestamp resolution) — accepted as a real but minor
+limitation for an interactive desktop tool, not disambiguated further.
+
+### `schema_migrations` table (lives in the TARGET database, not Stackyard's SQLite)
+
+```sql
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    BIGINT      NOT NULL PRIMARY KEY,
+    name       VARCHAR(255) NOT NULL,
+    applied_at TIMESTAMP   NOT NULL
+)
+```
+One dialect-neutral statement via `Engine.Exec` for both Postgres and
+MySQL — no per-engine branch needed. `version` reuses the exact same
+integer the migration filename carries, so a tracking row and its file
+are identified by one shared number, not two independently-assigned
+IDs. `applied_at` is a native `TIMESTAMP` (not the TEXT/ISO-8601
+convention `internal/storage` uses for its own local SQLite tables) —
+deliberate, since this table lives in the target Postgres/MySQL
+database, where a native timestamp is the idiomatic choice for that
+engine, not a borrowed local-storage convention.
+
+### `internal/storage` schema extension
+
+Added as schema version 2 in the EXISTING `PRAGMA user_version`-driven
+upgrade scheme (not a hand-edited `CREATE TABLE`) — a plain `ALTER TABLE
+connections ADD COLUMN migrations_folder TEXT`. `Connection
+.MigrationsFolder *string` is deliberately excluded from
+`CreateConnection`/`UpdateConnection`'s generic column list and only
+ever written via a new `SetConnectionMigrationsFolder`, mirroring the
+existing `LastUsedAt`/`TouchConnectionLastUsed` isolation pattern
+exactly (a value nobody should silently clobber via a generic update).
+
+### Bound methods (`migrations.go`, package main)
+
+```go
+func (a *App) SetConnectionMigrationsFolder(connectionID int64, folder string) (*storage.Connection, error)
+func (a *App) CreateMigrationFile(connectionID int64, name string) (*migrations.Migration, error)
+func (a *App) ListMigrations(connectionID int64) ([]migrations.Migration, error)
+func (a *App) EnsureMigrationsTable(sessionID string) error
+```
+No 3-output Wails-constraint issue here — every method already has at
+most 2 logical outputs (a domain value plus an error), matching the
+`ListConnections`/`SaveConnection` precedent directly rather than
+needing a new wrapper struct. `EnsureMigrationsTable` takes a
+`sessionID` (not a bare `connectionID`) to match `RunQuery`'s existing
+pattern — the caller must already have an open connection session via
+`OpenConnection` before bootstrapping the tracking table.
+
+### Explicitly NOT built yet (deliberately out of this task's scope)
+
+No folder-picker dialog (native OS directory picker) was wired —
+`SetConnectionMigrationsFolder` takes a raw path string; a picker
+naturally belongs to task 8.5's UI work. Apply/Rollback execution logic
+(8.3-8.4) doesn't exist yet — this task only built the scaffolding and
+tracking-table primitives those will run on top of.
+
+Test IDs used: **999027** (Postgres, port 15538), **999028** (MySQL,
+port 13309) — confirmed fresh via a repo-wide grep at the time (999001-
+999026 already taken). **999029+** is the next free slot — grep fresh
+before picking, this convention has drifted many times already.
+
+**Next steps:** dispatch tasks 8.3 (Apply — run all pending migrations
+in order, verify a mid-run failure leaves tracking state accurate and
+surfaces the DB error) and 8.4 (Rollback — revert exactly one step),
+bundled together since they're the same tightly-coupled "migration
+execution engine" operating on the file/tracking primitives above, then
+8.5 (Migrations UI panel) once 8.3-8.4 land.

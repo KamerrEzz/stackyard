@@ -37,6 +37,15 @@ type Service struct {
 
 // Connection is a DB Client saved connection — either pointing at a
 // Stackyard-managed Service or an arbitrary external host.
+//
+// MigrationsFolder is nil until explicitly set via
+// SetConnectionMigrationsFolder — it is the on-disk folder internal/
+// migrations (Phase 8) scaffolds and discovers migration file pairs in for
+// this connection (plan.md §4: migration file content lives on disk, not in
+// this SQLite database). It is deliberately excluded from
+// CreateConnection/UpdateConnection's generic column list, the same way
+// LastUsedAt is excluded from UpdateConnection — see
+// SetConnectionMigrationsFolder's doc comment.
 type Connection struct {
 	ID                int64
 	Name              string
@@ -48,6 +57,7 @@ type Connection struct {
 	Database          *string
 	ParamsJSON        string // raw JSON object, e.g. {"sslmode":"require"}
 	LastUsedAt        *string
+	MigrationsFolder  *string
 }
 
 // Snippet is a saved, reusable query.

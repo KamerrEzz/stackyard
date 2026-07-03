@@ -67,6 +67,12 @@ var schemaMigrations = []schemaMigration{
 			`CREATE INDEX IF NOT EXISTS idx_query_history_connection_id ON query_history(connection_id)`,
 		},
 	},
+	{
+		version: 2,
+		statements: []string{
+			`ALTER TABLE connections ADD COLUMN migrations_folder TEXT`,
+		},
+	},
 }
 
 func migrate(db *sql.DB) error {

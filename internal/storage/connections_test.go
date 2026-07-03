@@ -168,6 +168,32 @@ func TestUpdateConnection_ChangesPersist(t *testing.T) {
 	}
 }
 
+func TestUpdateConnection_DoesNotClobberMigrationsFolder(t *testing.T) {
+	db := openTestDB(t)
+
+	created, err := CreateConnection(db, &Connection{Name: "keeps-migrations-folder", Engine: EnginePostgres, Host: "localhost", Port: 5432})
+	if err != nil {
+		t.Fatalf("CreateConnection failed: %v", err)
+	}
+
+	if _, err := SetConnectionMigrationsFolder(db, created.ID, "/srv/migrations"); err != nil {
+		t.Fatalf("SetConnectionMigrationsFolder failed: %v", err)
+	}
+
+	created.Host = "10.0.0.9"
+	if _, err := UpdateConnection(db, created); err != nil {
+		t.Fatalf("UpdateConnection failed: %v", err)
+	}
+
+	fetched, err := GetConnection(db, created.ID)
+	if err != nil {
+		t.Fatalf("GetConnection after UpdateConnection failed: %v", err)
+	}
+	if fetched.MigrationsFolder == nil || *fetched.MigrationsFolder != "/srv/migrations" {
+		t.Errorf("expected UpdateConnection to leave MigrationsFolder untouched, got %v", fetched.MigrationsFolder)
+	}
+}
+
 func TestUpdateConnection_NotFound(t *testing.T) {
 	db := openTestDB(t)
 
@@ -210,6 +236,42 @@ func TestTouchConnectionLastUsed_NotFound(t *testing.T) {
 
 	if _, err := TouchConnectionLastUsed(db, 999999); err == nil {
 		t.Fatal("expected TouchConnectionLastUsed on a non-existent ID to return an error")
+	}
+}
+
+func TestSetConnectionMigrationsFolder_SetsAndPersists(t *testing.T) {
+	db := openTestDB(t)
+
+	created, err := CreateConnection(db, &Connection{Name: "with-migrations", Engine: EnginePostgres, Host: "localhost", Port: 5432})
+	if err != nil {
+		t.Fatalf("CreateConnection failed: %v", err)
+	}
+	if created.MigrationsFolder != nil {
+		t.Fatal("expected a freshly created connection to have a nil MigrationsFolder")
+	}
+
+	updated, err := SetConnectionMigrationsFolder(db, created.ID, `C:\migrations\prod`)
+	if err != nil {
+		t.Fatalf("SetConnectionMigrationsFolder failed: %v", err)
+	}
+	if updated.MigrationsFolder == nil || *updated.MigrationsFolder != `C:\migrations\prod` {
+		t.Fatalf("expected MigrationsFolder to be set, got %v", updated.MigrationsFolder)
+	}
+
+	fetched, err := GetConnection(db, created.ID)
+	if err != nil {
+		t.Fatalf("GetConnection after SetConnectionMigrationsFolder failed: %v", err)
+	}
+	if fetched.MigrationsFolder == nil || *fetched.MigrationsFolder != `C:\migrations\prod` {
+		t.Errorf("expected the migrations folder to persist, got %v", fetched.MigrationsFolder)
+	}
+}
+
+func TestSetConnectionMigrationsFolder_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	if _, err := SetConnectionMigrationsFolder(db, 999999, `/tmp/migrations`); err == nil {
+		t.Fatal("expected SetConnectionMigrationsFolder on a non-existent ID to return an error")
 	}
 }
 
