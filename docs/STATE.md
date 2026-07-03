@@ -2908,9 +2908,114 @@ port 13309) — confirmed fresh via a repo-wide grep at the time (999001-
 999026 already taken). **999029+** is the next free slot — grep fresh
 before picking, this convention has drifted many times already.
 
-**Next steps:** dispatch tasks 8.3 (Apply — run all pending migrations
-in order, verify a mid-run failure leaves tracking state accurate and
-surfaces the DB error) and 8.4 (Rollback — revert exactly one step),
-bundled together since they're the same tightly-coupled "migration
-execution engine" operating on the file/tracking primitives above, then
-8.5 (Migrations UI panel) once 8.3-8.4 land.
+---
+
+## Session 14 — Phase 8 continues: Apply/Rollback engine (8.3-8.4)
+
+### Transaction/atomicity approach: new optional `dbengine.Transactor`, not a breaking `Engine` change
+
+Both `postgres.Engine` (pgxpool) and `mysql.Engine` (`database/sql`) are
+pooled — separate `Exec` calls carrying raw `BEGIN`/`COMMIT` text have no
+guarantee of landing on the same underlying connection, so that
+approach would not actually be atomic. Real transactions were required
+(`pgxpool.Pool.Begin`, `sql.DB.BeginTx`), each bound to one connection.
+
+Rather than adding `BeginTx` to `dbengine.Engine` itself (which would
+force every existing test double across the repo —
+`fakeGridEngine`/`fakeQueryEngine`/`fakeSchemaEngine`/etc. — to
+implement it, and would be unenforceable for `mongo`/`redis`, which
+don't implement `dbengine.Engine` at all), a separate, OPTIONAL
+`dbengine.Transactor` interface was added (Go's `io.ReaderFrom`-style
+optional-interface pattern). `Apply`/`Rollback` type-assert
+`engine.(dbengine.Transactor)` and return a clear error if unsupported.
+This kept the blast radius to exactly the two files that needed it
+(`postgres.go`, `mysql.go`) — `grid.go`'s only change was a generalized
+error-message string (the `dialectForEngine` helper is now shared by
+the grid and migrations, no behavioral change) since both `run`
+functions were refactored to share their row-scanning logic
+(`buildQueryResult`/`runSQL`) between the plain pooled path and the new
+transaction path, not duplicated.
+
+**Verified this refactor introduced zero regression** by re-running the
+FULL integration suite (not just the new migrations tests) twice
+consecutively, including `TestIntegration_App_EditableGrid_Postgres`/
+`_MySQL` specifically (the feature most exposed to any `Engine.Exec`
+behavior change) — both pass cleanly both times.
+
+### Bound methods
+
+```go
+func (a *App) ApplyMigrations(sessionID string) (*migrations.ApplyResult, error)
+func (a *App) RollbackMigration(sessionID string) (*migrations.Migration, error)
+```
+`ApplyResult{Applied []Migration; Failed *Migration; FailedError string}`
+returned directly (no wrapper struct needed — already 2 logical
+outputs, matching the `ListMigrations` precedent).
+
+**"Nothing to roll back" signal: `(nil, nil)`, not a sentinel error** —
+Wails IPC serializes Go errors as plain strings to JS, so
+`errors.Is`-style sentinel checking doesn't survive the boundary
+anyway; a nil pointer with nil error lets the frontend do a trivial
+`if (result == null)` check rather than string-matching an error
+message.
+
+### Guarantees, proven against real containers with direct DB queries (not just the Go return value)
+
+- **Apply stops at the first failure**: seeded 3 pending migrations
+  where #2's SQL is deliberately invalid — confirmed via direct
+  `ListTables`/`SELECT version FROM schema_migrations` queries that
+  migration 1's schema change AND tracking row both landed, migration
+  2's schema change did NOT land and has no tracking row, and migration
+  3 was never attempted at all.
+- **Rollback reverts exactly one step**: 3 sequential `Rollback` calls
+  against a stack of 3 applied migrations correctly reverted
+  most-recent-first, one at a time, never touching earlier ones.
+- **Rollback with nothing applied** returns `(nil, nil)` cleanly.
+
+### Known limitation (real, not yet solved — flagged, not silently accepted)
+
+**Multi-statement migration files are not supported.** Both pgx
+(default extended/cached-statement protocol) and MySQL's default driver
+config (no `multiStatements=true` in the DSN) reject a single `Exec`
+call containing multiple semicolon-separated statements. `applyOne`/
+`rollbackOne` run each migration's whole file content as ONE `Exec`
+call, so a migration file must contain exactly one statement. Fixing
+this would mean changing connection/DSN construction
+(`urlparse.go`/`OpenConnection`), which is out of this task's scope —
+flagged for whoever picks up 8.5 or a later polish pass to decide
+whether it's worth solving before v1 ships, since a real user's
+migration will often need more than one statement (e.g. `CREATE TABLE`
++ an index in the same `up.sql`).
+
+### A real bug this session caught and fixed: hardcoded integration-test ports collided across packages
+
+While independently re-verifying this task (before trusting the
+subagent's "all green" report), running the FULL integration suite
+(`go test -tags=integration ./...`, which runs different packages'
+tests CONCURRENTLY by default) surfaced two flaky failures:
+`TestIntegration_App_EditableGrid_Postgres` and
+`TestIntegration_MySQLEngine_ForeignKeys`, both failing with "port is
+already allocated." Root cause: this task's two new integration test
+files each independently grepped for free `9990\d\d` TEST/PROFILE/
+SERVICE IDs (correctly, per the established convention) but picked
+HARDCODED HOST PORTS that were never separately checked against the
+repo's other tests' ports — IDs and ports are independent number
+spaces in this codebase, and nothing in the existing convention said to
+check both. Concretely: `bootstrap_integration_test.go`'s port 15538
+collided with `grid_integration_test.go`'s existing port; its port
+13309 collided with `internal/docker/mysql_test.go`'s; and
+`apply_rollback_integration_test.go`'s port 15539 collided with
+`import_integration_test.go`'s, its port 13310 with
+`mysql_integration_test.go`'s FK test. All four were reassigned to
+genuinely free ports (15542/13312 and 15543/13313 respectively,
+re-verified via a fresh grep) — confirmed via two consecutive clean
+full-suite runs afterward. **Lesson for every future integration test in
+this repo: grep `HostPort\s*=\s*\d+` for existing hardcoded ports, in
+ADDITION to the existing `9990\d\d` test-ID grep — they are separate
+conventions that must both be checked, not one check standing in for
+the other.**
+
+Phase 8 remaining: task 8.5 (Migrations UI panel — pending/applied
+list, apply/rollback actions, per-connection scoping, plus a
+folder-picker dialog for the migrations folder, since 8.1-8.2's
+`SetConnectionMigrationsFolder` only takes a raw path string today).

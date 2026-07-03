@@ -11,10 +11,16 @@
 // Uses test/profile/service IDs 999027 (Postgres) and 999028 (MySQL) —
 // 999001-999026 are already taken across this repo's other integration
 // tests (grepped for every 9990\d\d literal in the repo before picking
-// these, per docs/STATE.md's running convention) — and host ports 15538
-// (Postgres) and 13309 (MySQL), distinct from every other integration
-// test's port in this repo. Everything created is torn down in t.Cleanup so
-// the test is fully self-cleaning and safely re-runnable.
+// these, per docs/STATE.md's running convention) — and host ports 15542
+// (Postgres) and 13312 (MySQL). These are distinct from every other
+// integration test's HARDCODED HOST PORT in this repo — a separate number
+// space from the 9990\d\d test-ID convention above, since ports and IDs
+// are independently assigned; grep every `HostPort\s*=\s*\d+` literal
+// (not just `9990\d\d`) before picking a port for a new integration test,
+// since two different test IDs can still collide on the same port when
+// `go test ./...` runs packages concurrently. Everything created is torn
+// down in t.Cleanup so the test is fully self-cleaning and safely
+// re-runnable.
 package migrations
 
 import (
@@ -33,11 +39,11 @@ import (
 const (
 	bootstrapIntegrationPostgresProfileID int64 = 999027
 	bootstrapIntegrationPostgresServiceID int64 = 999027
-	bootstrapIntegrationPostgresHostPort        = 15538
+	bootstrapIntegrationPostgresHostPort        = 15542
 
 	bootstrapIntegrationMySQLProfileID int64 = 999028
 	bootstrapIntegrationMySQLServiceID int64 = 999028
-	bootstrapIntegrationMySQLHostPort        = 13309
+	bootstrapIntegrationMySQLHostPort        = 13312
 )
 
 func TestIntegration_BootstrapTrackingTable_Postgres(t *testing.T) {

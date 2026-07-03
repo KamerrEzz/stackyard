@@ -116,11 +116,26 @@ func (e *Engine) run(ctx context.Context, query string, args ...any) (*dbengine.
 	if e.db == nil {
 		return nil, ErrNotConnected
 	}
+	return runSQL(ctx, e.db, query, args...)
+}
 
+// sqlExecQueryer is the common subset of database/sql's API that both *sql.DB
+// and *sql.Tx satisfy — runSQL below works identically whether it is handed
+// a plain pooled connection (Engine.run) or one bound to an explicit
+// transaction (BeginTx/mysqlTx.Exec, dbengine.Transactor for tasks.md
+// 8.3-8.4), without needing two copies of the statement-classification/
+// row-scanning logic.
+type sqlExecQueryer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// runSQL is run and mysqlTx.Exec's shared implementation.
+func runSQL(ctx context.Context, conn sqlExecQueryer, query string, args ...any) (*dbengine.QueryResult, error) {
 	start := time.Now()
 
 	if !isReadStatement(query) {
-		result, err := e.db.ExecContext(ctx, query, args...)
+		result, err := conn.ExecContext(ctx, query, args...)
 		if err != nil {
 			return nil, translateMySQLError("exec", err)
 		}
@@ -132,7 +147,7 @@ func (e *Engine) run(ctx context.Context, query string, args ...any) (*dbengine.
 		return &dbengine.QueryResult{RowsAffected: affected, LastInsertID: lastInsertID, Duration: time.Since(start)}, nil
 	}
 
-	rows, err := e.db.QueryContext(ctx, query, args...)
+	rows, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, translateMySQLError("query", err)
 	}
@@ -158,6 +173,57 @@ func (e *Engine) run(ctx context.Context, query string, args ...any) (*dbengine.
 
 	return &dbengine.QueryResult{Columns: columns, Rows: resultRows, Duration: time.Since(start)}, nil
 }
+
+// BeginTx starts a real MySQL transaction bound to a single connection
+// (sql.DB.BeginTx), satisfying dbengine.Transactor for the migrations
+// Apply/Rollback engine (tasks.md 8.3-8.4) — the only caller that needs more
+// than one statement to share a single connection's transaction state,
+// which per-call pooled ExecContext/QueryContext cannot guarantee on their
+// own.
+func (e *Engine) BeginTx(ctx context.Context) (dbengine.Tx, error) {
+	if e.db == nil {
+		return nil, ErrNotConnected
+	}
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, translateMySQLError("begin transaction", err)
+	}
+	return &mysqlTx{tx: tx}, nil
+}
+
+var _ dbengine.Transactor = (*Engine)(nil)
+
+// mysqlTx implements dbengine.Tx over a single *sql.Tx — every Exec call
+// runs against the same underlying connection BeginTx acquired, until
+// Commit or Rollback ends it.
+type mysqlTx struct {
+	tx *sql.Tx
+}
+
+// Exec runs query against this transaction's connection exactly like
+// Engine.Exec, sharing runSQL's statement-classification/row-scanning logic.
+func (t *mysqlTx) Exec(ctx context.Context, query string, args ...any) (*dbengine.QueryResult, error) {
+	return runSQL(ctx, t.tx, query, args...)
+}
+
+// Commit ends the transaction, making every Exec call since BeginTx
+// permanent.
+func (t *mysqlTx) Commit(ctx context.Context) error {
+	if err := t.tx.Commit(); err != nil {
+		return translateMySQLError("commit transaction", err)
+	}
+	return nil
+}
+
+// Rollback ends the transaction, discarding every Exec call since BeginTx.
+func (t *mysqlTx) Rollback(ctx context.Context) error {
+	if err := t.tx.Rollback(); err != nil {
+		return translateMySQLError("rollback transaction", err)
+	}
+	return nil
+}
+
+var _ dbengine.Tx = (*mysqlTx)(nil)
 
 // resultColumns converts database/sql's *sql.ColumnType slice into
 // dbengine.ResultColumn, resolving each column's DatabaseType from

@@ -14,6 +14,7 @@ import (
 
 	"stackyard/internal/dbengine"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -109,6 +110,15 @@ func (e *Engine) run(ctx context.Context, query string, args ...any) (*dbengine.
 	}
 	defer rows.Close()
 
+	return buildQueryResult(rows, start)
+}
+
+// buildQueryResult reads every row out of rows into a *dbengine.QueryResult.
+// pgx.Rows is satisfied by both pgxpool.Pool.Query's return value and
+// pgx.Tx.Query's (see BeginTx/pgTx.Exec below), so run and pgTx.Exec share
+// this one implementation of pgx's FieldDescriptions/Next/Values/CommandTag
+// call sequence rather than duplicating it per caller.
+func buildQueryResult(rows pgx.Rows, start time.Time) (*dbengine.QueryResult, error) {
 	fieldDescriptions := rows.FieldDescriptions()
 	columns := make([]dbengine.ResultColumn, len(fieldDescriptions))
 	for i, fd := range fieldDescriptions {
@@ -138,6 +148,64 @@ func (e *Engine) run(ctx context.Context, query string, args ...any) (*dbengine.
 	}
 	return &dbengine.QueryResult{Columns: columns, Rows: resultRows, Duration: duration}, nil
 }
+
+// BeginTx starts a real Postgres transaction bound to a single connection
+// acquired from the pool (pgxpool.Pool.Begin), satisfying dbengine.Transactor
+// for the migrations Apply/Rollback engine (tasks.md 8.3-8.4) — the only
+// caller that needs more than one statement to share a single connection's
+// transaction state, which per-call pool.Query/Exec cannot guarantee on
+// their own.
+func (e *Engine) BeginTx(ctx context.Context) (dbengine.Tx, error) {
+	if e.pool == nil {
+		return nil, ErrNotConnected
+	}
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		return nil, translatePgError("begin transaction", err)
+	}
+	return &pgTx{tx: tx}, nil
+}
+
+var _ dbengine.Transactor = (*Engine)(nil)
+
+// pgTx implements dbengine.Tx over a single pgx.Tx (the value
+// pgxpool.Pool.Begin returns) — every Exec call runs against the same
+// underlying connection Begin acquired, until Commit or Rollback ends it.
+type pgTx struct {
+	tx pgx.Tx
+}
+
+// Exec runs query against this transaction's connection exactly like
+// Engine.Exec, sharing buildQueryResult's row-scanning logic.
+func (t *pgTx) Exec(ctx context.Context, query string, args ...any) (*dbengine.QueryResult, error) {
+	start := time.Now()
+	rows, err := t.tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, translatePgError("tx exec", err)
+	}
+	defer rows.Close()
+
+	return buildQueryResult(rows, start)
+}
+
+// Commit ends the transaction, making every Exec call since BeginTx
+// permanent.
+func (t *pgTx) Commit(ctx context.Context) error {
+	if err := t.tx.Commit(ctx); err != nil {
+		return translatePgError("commit transaction", err)
+	}
+	return nil
+}
+
+// Rollback ends the transaction, discarding every Exec call since BeginTx.
+func (t *pgTx) Rollback(ctx context.Context) error {
+	if err := t.tx.Rollback(ctx); err != nil {
+		return translatePgError("rollback transaction", err)
+	}
+	return nil
+}
+
+var _ dbengine.Tx = (*pgTx)(nil)
 
 const listSchemasQuery = `
 SELECT schema_name

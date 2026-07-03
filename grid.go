@@ -47,11 +47,12 @@ func (a *App) gridSession(sessionID string) (*querySession, dbengine.Dialect, er
 }
 
 // dialectForEngine maps a session's storage.Engine to the dbengine.Dialect
-// its generated grid SQL should use. The editable data grid (spec.md §4.3)
-// is explicitly PostgreSQL/MySQL only — MongoDB and Redis have their own,
-// entirely different browse/edit UI paradigms (Phase 5/6), so a session
-// opened against either is rejected here rather than producing nonsensical
-// SQL.
+// its generated SQL should use. Shared by every relational-only feature —
+// the editable data grid (spec.md §4.3) and migrations (spec.md §4.8, tasks.md
+// 8.3-8.4) — since both are explicitly PostgreSQL/MySQL only: MongoDB and
+// Redis have their own, entirely different UI paradigms (Phase 5/6), so a
+// session opened against either is rejected here rather than producing
+// nonsensical SQL.
 func dialectForEngine(engine storage.Engine) (dbengine.Dialect, error) {
 	switch engine {
 	case storage.EnginePostgres:
@@ -59,7 +60,7 @@ func dialectForEngine(engine storage.Engine) (dbengine.Dialect, error) {
 	case storage.EngineMySQL:
 		return dbengine.DialectMySQL, nil
 	default:
-		return "", fmt.Errorf("the editable data grid supports PostgreSQL and MySQL only, not %q", engine)
+		return "", fmt.Errorf("PostgreSQL and MySQL only, not %q", engine)
 	}
 }
 

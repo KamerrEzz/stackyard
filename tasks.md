@@ -159,10 +159,10 @@ code surface with the editable-grid work above.
       folder.
 - [x] **8.2** `schema_migrations` tracking-table bootstrap inside the
       target database on first use (plan.md §4).
-- [ ] **8.3** "Apply": run all pending migrations in order; verify a
+- [x] **8.3** "Apply": run all pending migrations in order; verify a
       mid-run failure leaves tracking state accurate and surfaces the DB
       error.
-- [ ] **8.4** "Rollback": revert exactly one migration step.
+- [x] **8.4** "Rollback": revert exactly one migration step.
 - [ ] **8.5** Migrations UI panel: pending/applied list, apply/rollback
       actions, per-connection scoping.
 
