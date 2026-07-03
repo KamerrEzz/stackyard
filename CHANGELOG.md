@@ -106,6 +106,57 @@ This completes **Module 1 — Environment Manager** in full (spec.md §3):
 all 4 engines (Postgres, MySQL, MongoDB, Redis), profile CRUD, volume
 reset, and a live status/stats dashboard.
 
+- `internal/dbengine/engine.go`: the `Engine` interface (`Connect`, `Ping`,
+  `Query`, `ListSchemas`, `ListTables`, `Close`, plus `QueryResult`/
+  `ColumnInfo`/`TableInfo`) shared by every Module 2 (DB Client) engine
+  implementation (task 3.1).
+- Real Postgres (`pgx`) and MySQL (`go-sql-driver/mysql`) `Engine`
+  implementations, including schema/table listing via
+  `information_schema` for both engines; server-side query cancellation
+  verified against a live Docker Engine (a 30s `pg_sleep`/`SLEEP` aborted
+  in ~1s under a 1s-timeout context, not just abandoned client-side)
+  (task 3.2).
+- `internal/dbengine/urlparse.go`: connection-string parser for all 4
+  engine URL schemes into `ConnectionFields`, with 12 distinct
+  malformed-input cases each individually tested against their exact
+  error string (empty input, missing scheme separator, empty/unsupported
+  scheme, missing host, non-numeric/out-of-range port, trailing colon
+  with no port digits, malformed userinfo, username-on-redis, missing
+  database for postgres/mysql, multi-segment database path) (task 3.3).
+- Connection form UI (`DbClientView.tsx` + `app.go`'s
+  `ParseConnectionURL`/`TestConnection`): paste a connection URL to
+  autofill all fields (still editable afterward), or fill fields
+  manually; "Test Connection" reports success/failure without saving
+  anything (task 3.4).
+- Saved connections list (`internal/storage/connections.go` +
+  `app.go`), persisted across restarts — verified for real by killing
+  and relaunching the whole `wails dev` process tree and confirming a
+  saved connection was still listed, loadable, and deletable (task 3.5).
+- Monaco-based query editor (`@monaco-editor/react`, bundled locally —
+  see Fixed below) wired to a real per-session run/cancel API
+  (`OpenConnection`/`RunQuery`/`CancelQuery`/`CloseConnectionSession`),
+  designed from the start for multi-tab independence: every
+  `OpenConnection` call creates its own session with no implicit sharing
+  (task 3.6).
+- Read-only results grid (`ResultsGrid` + `resultsGridHelpers.ts`, this
+  project's first Vitest suite) with real per-column type metadata
+  (`QueryResult.Columns` now `[]ResultColumn{Name, DatabaseType,
+  Nullable *bool}` — see Changed below), client-side pagination
+  (100 rows/page), and NULL visually distinct from an empty string (task
+  3.7).
+- Multi-tab shell (`TabBar.tsx` + `tabState.ts` + `DbClientView.tsx`):
+  open/close tabs, each bound to its own connection session; tabs stay
+  mounted-and-hidden (not swapped) so scroll position and unsaved query
+  text survive a tab switch; cross-tab independence verified for real
+  against two live containers (Postgres + MySQL) — running a query and
+  typing a draft in one tab left a second tab's own query/result
+  completely untouched (task 3.8).
+
+This completes the **DB Client MVP slice of Module 2** (spec.md §4) for
+the two engines built so far (Postgres, MySQL) — the full relational
+feature set (editable grid, schema diagrams, MongoDB/Redis support) is
+Phase 4/4.5's job, not this one.
+
 ### Fixed
 
 - Docker-integration test container-ID collisions: three of Phase 2's
@@ -119,6 +170,27 @@ reset, and a live status/stats dashboard.
   `profile_multiengine_integration_test.go`,
   `reset_volume_integration_test.go`); no automated guard against future
   collisions exists yet — see `docs/STATE.md`.
+- MySQL DSN construction (task 3.4): forcing `cfg.ParseTime = true` while
+  also copying a pasted `?parseTime=false` into `go-sql-driver/mysql`'s
+  `Config.Params` produced a DSN with `parseTime` appearing twice —
+  `FormatDSN()` writes the struct field first and `Params` (sorted
+  alphabetically) after, so the second occurrence silently won on
+  re-parse, undoing the forced `true`. Fixed by stripping any
+  `parseTime` key from `Params` before copying it in.
+- `ListConnections()` returned Go's `nil` for an empty slice, which
+  JSON-encodes to `null` and crashed the frontend on
+  `savedConnections.length` (task 3.5). Fixed by normalizing to an empty
+  slice before returning — the second occurrence of this exact
+  nil-slice-serializes-to-`null` pattern in this project (first in
+  `ListProfiles`'s `ProfileSummary` wrapping, Phase 2).
+- Monaco defaulted to CDN loading (task 3.6): `@monaco-editor/react`'s
+  default loader fetches Monaco from `cdn.jsdelivr.net` at runtime, a
+  silent violation of spec.md §5's local-only NFR. Fixed by installing
+  `monaco-editor` directly and adding
+  `frontend/src/lib/monacoSetup.ts` to wire the base editor worker and
+  call `loader.config({monaco})` before any `<Editor>` mounts — verified
+  via captured network traffic showing zero external requests during a
+  full manual test pass.
 
 ### Changed
 
@@ -129,3 +201,11 @@ reset, and a live status/stats dashboard.
   changed; `go build`/`go vet`/`go test` and `pnpm run build` stayed green
   throughout. Rationale that was previously inline is preserved in
   `docs/STATE.md`.
+- **Breaking:** `dbengine.QueryResult.Columns` changed from `[]string` to
+  `[]ResultColumn{Name, DatabaseType, Nullable *bool}` (task 3.7), to
+  carry real per-column type metadata into the results grid. This
+  rippled through `engine.go`, both Postgres/MySQL implementations and
+  their tests, and the generated `frontend/wailsjs/go/models.ts` — the
+  full ripple was independently re-verified by a fresh-context
+  adversarial reviewer (repo-wide grep for `.Columns\b`), not just
+  trusted from the implementing task's own report.

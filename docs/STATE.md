@@ -366,6 +366,35 @@ git tag -a v0.2.0 -m "Phase 2: Environment Manager, full (MySQL/MongoDB/Redis or
 Neither has been run by this agent — both are for the user to execute
 manually, in whatever order/timing they prefer.
 
+**Update, Session 4 (2026-07-02) — Phase 3 closed, `v0.3.0` now due:**
+Phase 3 ("DB Client MVP — Postgres + MySQL," tasks 3.1-3.8) is complete
+— every task verified against a live Docker Engine and every
+phase-closing manual click-through performed for real via Playwright
+against the running app (see "Session 4" sections above). Per
+`plan.md` §6 this completes the **DB Client MVP slice of Module 2** for
+the two engines built so far; the full relational feature set (editable
+grid, schema diagrams) is Phase 4/4.5's job, not this one — that
+distinction doesn't change the tag mapping, which is keyed to phase
+closure per the roadmap, not to full-module completion.
+
+Checked `git tag -l` directly again this session: **still no tags exist
+in this repo** — `v0.1.0` and `v0.2.0` from the notes above have still
+not been run. Consistent with the reasoning already established above,
+that doesn't block proposing `v0.3.0` now:
+
+- Phase 3's closing commit: `c89a91a` ("feat: multi-tab shell for DB
+  Client, completes Phase 3 (task 3.8)") — current `HEAD`
+
+```
+git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop/restart, connection string copy)" e743c6b
+git tag -a v0.2.0 -m "Phase 2: Environment Manager, full (MySQL/MongoDB/Redis orchestration, multi-engine wizard, profile duplicate/rename/delete, reset volume, live status/stats dashboard) - completes Module 1" 92ff4bc
+git tag -a v0.3.0 -m "Phase 3: DB Client MVP for Postgres+MySQL (Engine interface, connection-string parser, connection form, saved connections, Monaco editor with cancellable queries, typed results grid, multi-tab shell)" c89a91a
+```
+
+None of these three have been run by this agent — all are for the user
+to execute manually, in whatever order/timing they prefer, each
+pointing at the exact commit where that phase actually closed.
+
 ---
 
 ## Retroactive comment cleanup — rationale preserved (frontend)
@@ -1214,3 +1243,90 @@ Sources checked directly (not recalled from training): `pgx/v5@v5.10.0`
 not just unit-tested in isolation, and every phase-closing manual
 click-through was performed for real via Playwright against the running
 app — not simulated or assumed.
+
+---
+
+## Session 4 close-out — current phase, last task, next steps
+
+**Current phase:** Phase 3 (DB Client MVP — Postgres + MySQL) is complete
+and closed — `tasks.md` 3.1-3.8 all checked. Per `plan.md` §6, this
+completes the **DB Client MVP slice of Module 2** (spec.md §4) for the
+two engines built so far (Postgres, MySQL). The full relational feature
+set for Module 2 — editable grid, schema diagrams, MongoDB/Redis
+support — is explicitly Phase 4/4.5's job, not this one.
+
+**Last task completed:** 3.8 (multi-tab shell), verified end-to-end
+against two live containers (Postgres + MySQL) for real cross-tab
+independence (unsaved draft text and prior results in one tab untouched
+by another tab's activity).
+
+**In-flight / undecided items carried forward (not blockers, just
+flagged):**
+
+- Password encryption at rest (`plan.md` §4's commitment) is still
+  unimplemented — carried forward from Session 3's close-out, still true
+  after Phase 3; `Connection.PasswordEncrypted` still holds plaintext.
+  Still has no owning task in `tasks.md` 1.1-9.4.
+- `mysql.New` takes a raw go-sql-driver DSN, not a `mysql://` URL — any
+  future engine wiring must go through the connection-form's DSN
+  translation (task 3.4), not call `mysql.New` with a pasted URL
+  directly.
+- `Engine.Query` handles exactly one statement; multi-statement
+  orchestration (spec.md §4.6) is an explicit caller-level concern not
+  yet built (Phase 4/4.6's job).
+- Bundling all of `monaco-editor` (task 3.6's CDN fix) pulls in ~90
+  per-language chunks (~3.9MB pre-gzip main JS chunk) — flagged as a
+  candidate for task 9.1's performance pass to scope down to just the
+  `sql` language.
+- `tsconfig.json` excludes `*.test.ts(x)` from the production `tsc`
+  build (task 3.7) because a transitive `@types/node@26` pulled in by
+  vitest uses syntax the pinned `typescript@4.6.4` can't parse — a type
+  error inside a test file currently goes undetected by both `tsc` and
+  `vitest`. Worth revisiting if TypeScript is ever upgraded.
+- Tabs are closed-on-exit, not persisted across app restart (task 3.8) —
+  a deliberate resolution of an ambiguity between `tasks.md` and
+  `spec.md` §4.2 that `plan.md` itself never actually settles. Flagged
+  in case restart-persisted tabs are wanted later.
+- The Docker-integration test container-ID convention (`9990\d\d`) still
+  has no automated guard; next free ID after Phase 3 is 999017+ (999010-
+  999016 used across tasks 3.2/3.4/3.8) — grep the whole repo for every
+  `9990\d\d` literal before picking the next one.
+
+**Command to run the app locally:**
+
+```
+cd D:\CODE\projects\Stackyard
+wails dev
+```
+
+(Unchanged since Phase 0 — see the pnpm/`wails.json` gotcha noted in
+Session 1 if this fails with an `EUNSUPPORTEDPROTOCOL`-style error.)
+
+**Run tests:**
+
+```
+cd D:\CODE\projects\Stackyard
+go test ./...
+go test -tags=integration ./internal/docker/... ./internal/dbengine/...
+pnpm run build
+pnpm vitest run
+```
+
+**Next steps:** Phase 4 — DB Client, full relational feature set
+(editable grid, schema diagrams for Postgres/MySQL via 4.5, remaining
+Module 2 work for the two engines already built). See `plan.md` §6 for
+the full phase breakdown, including Phase 4.5's note that it depends on
+Phase 3's `ListSchemas`/`ListTables` and shares no code with Phase 4's
+editable-grid work (parallelizable).
+
+**Planning gap flagged by qa-reviewer, not a Phase 3 acceptance failure**:
+spec.md §4.6 requires "Multi-statement execution (SQL) runs statements
+independently and reports per-statement success/failure," and
+`engine.go`'s own doc comment on `Query` explicitly defers this to "the
+query editor UI" — but no task in `tasks.md`'s Phase 4 (4.1-4.8) actually
+owns it by name. `Engine.Query` currently executes exactly one
+statement (task 3.2's documented scope). This needs to land somewhere in
+Phase 4 — most naturally alongside 4.6/4.7 (snippets can contain
+multi-statement SQL) or as its own explicit addition — rather than being
+silently dropped. Whoever picks up Phase 4 should decide and record
+which task absorbs it, not assume it's already covered.
