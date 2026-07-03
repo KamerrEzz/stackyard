@@ -213,14 +213,14 @@ Phase 11 section for the exact clarified scope confirmed with the user
 (layout paradigm, license choice, GitHub repo plan, docs framework —
 all decided via explicit user confirmation, not assumed).
 
-- [ ] **11.1** DB Client: replace the single long-scrolling page with a
+- [x] **11.1** DB Client: replace the single long-scrolling page with a
       3-panel layout — left sidebar (saved connections + the active
       connection's schema/table tree with quick actions), center panel
       (query editor / data grid tabs per open connection), right panel
       or collapsible section (template gallery, snippets, query
       history) — so the page is self-explanatory without needing it
       explained to a new user.
-- [ ] **11.2** DB Client: a spreadsheet-style editable data grid that
+- [x] **11.2** DB Client: a spreadsheet-style editable data grid that
       REPLACES the existing read-only "Browse" view — double-click a
       cell to edit it inline (real `UPDATE`), right-click a row for a
       context menu (delete row, at minimum), an "+ Add row" action

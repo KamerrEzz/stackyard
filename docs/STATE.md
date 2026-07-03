@@ -4748,3 +4748,207 @@ it applies ONLY to that one documentation section. Commits, PR
 descriptions, and code comments continue to carry zero AI attribution
 per the unchanged standing rule, since the user did not ask for that
 more broadly.
+
+## Session 25 — Phase 11 implementation: 3-panel layout + spreadsheet-style grid
+
+Implemented both 11.1 and 11.2 per Session 24's clarified scope. No Go
+backend changes were required for either task — `internal/dbengine`
+and `grid.go` already had everything both tasks needed from a prior
+phase (see below), so this session was entirely a frontend
+(`frontend/src/modules/db-client`) restructuring/extension.
+
+### 11.1 — 3-panel layout
+
+Read `DbClientView.tsx` and `QueryEditor.tsx` first, as instructed —
+confirmed the old layout really was one long vertical column: paste-URL
+form, manual fields, saved connections list, snippets panel, template
+gallery, query history, then the tab strip, with the schema/table tree
+and its "+ New table"/"Refresh schema" buttons buried *inside*
+`QueryEditor`'s own render, below the query editor itself.
+
+**Layout decision**: a CSS-flex 3-column row (`<aside>` / `<main>` /
+`<aside>`) inside `DbClientView`, matching this codebase's existing
+ink/brass Tailwind tokens and the same bordered-panel visual language
+already used throughout (`rounded border border-ink-800 bg-ink-900/40`).
+Left sidebar (`w-72`): a collapsible "+ New connection" form (collapsed
+automatically right after a connection opens a tab, toggleable via a
+button, so the form doesn't dominate once a user has connections open),
+the saved connections list below it, and — new — the active SQL tab's
+schema/table tree with "+ New table"/"Refresh schema" quick actions.
+Center (`flex-1`): the existing tab strip + active tab's content,
+unchanged in spirit. Right sidebar (`w-96`, collapsible to `w-10` via a
+toggle button): Template gallery, Snippets panel, Query history — in
+that order, template gallery first since it's the most "browse and
+click" of the three and snippets/history are more personal/lookup-heavy.
+
+**The core architectural problem this task creates**: the schema tree
+needs to render in the *left sidebar*, but the schema/session state
+(`sessionIdRef`, `schemaEntries`, `ensureSession`, `loadSchema`, browse/
+import/export handlers) has always lived *inside* `QueryEditor`, one
+per open SQL tab. Moving that state out of `QueryEditor` entirely would
+have been a much larger, riskier refactor (session lifecycle, Monaco
+autocomplete wiring, and the dirty-tab check all depend on it staying
+where it is). Chosen approach instead: `QueryEditor` keeps 100% of its
+existing internal state, and now additionally (a) pushes a `SchemaSnapshot`
+up to `DbClientView` via a new `onSchemaUpdate` prop every time its
+schema state changes, and (b) exposes new imperative-handle methods
+(`refreshSchema`, `openCreateTable`, `browseTable`, `openImport`,
+`exportSchema`) so the sidebar's buttons can drive the *active* tab's
+session without needing to know anything about connections themselves.
+`DbClientView` mirrors every open tab's snapshot in a
+`Map<tabId, SchemaSnapshot>` (only the active tab's entry is ever
+rendered, in the new `SchemaTree.tsx` component) and caches one stable
+per-tab callback reference per tab id (same ref-map pattern this file
+already uses for `editorHandlesRef`/`registerEditorHandle`) — this
+matters because passing a fresh inline arrow function as `onSchemaUpdate`
+on every `DbClientView` render would have made `QueryEditor`'s internal
+push-effect re-run on every parent render for no reason.
+
+`QueryEditor` itself also gained an internal "Query"/"Data" sub-tab
+switcher (tasks.md's "center panel ... sub-tabs for Query and Data"):
+clicking a table in the sidebar tree calls the active tab's
+`browseTable` handle method, which now also switches that tab to its
+"Data" sub-tab automatically; running a query switches back to "Query".
+Both sub-tabs were already almost fully built (the query pane and the
+Browse grid existed side-by-side before, just always both visible in
+one long scroll) — this was a rendering split, not new logic.
+
+The "+ New connection" form's paste-URL/manual-fields/test/save section
+is unchanged internally; only its position (collapsible, in the left
+sidebar) and default-collapse-after-opening-a-tab behavior are new.
+
+**Revision — same session, live user feedback**: after seeing the
+3-panel layout above, the user pushed back directly: "no me gusta como
+se ve el DB Client, no se aprovecha bien los espacios, creo que seria
+mas eficiente separarlos por pestañas en un tab" (space isn't used
+well; separating things into tabs would be more efficient). Per this
+project's standing rule to stop and ask rather than assume on a real
+ambiguity, presented three concrete readings before touching code
+again: (A) only the right column becomes tabs (Templates/Snippets/
+History), (B) the left sidebar also becomes tabs (Connections/Schema),
+or (C) abandon the persistent 3-panel split entirely in favor of
+top-level tabs ("Query"/"Data"/"Tools") each taking the full center
+width, one at a time. The user chose **C**. Follow-up asked whether the
+left sidebar (connections + schema tree) should also collapse into a
+tab under that scheme or stay as a fixed panel — recommended keeping it
+fixed (a user needs to see/switch tables and connections at all times
+without losing whatever top-level tab they're on; folding it into the
+tab strip would force switching away from "Query" or "Data" just to
+pick a different table, reintroducing the exact friction being
+removed). User agreed ("me parece bien").
+
+**Final layout actually shipped**: left sidebar stays fixed and
+unchanged (connections list + schema tree, from the first pass above).
+The center area's persistent right column (Template gallery / Snippets
+/ Query history, always visible at `w-96`) was removed entirely and
+replaced with a peer-level "Query" / "Data" / "Tools" tab strip
+(`workspaceTab` state in `DbClientView`, shared across every open
+connection tab since only one connection tab is ever visible at once
+anyway) sitting directly below the existing connection `TabBar`, at
+the same visual nesting level. "Tools" itself got its own inner
+"Templates" / "Snippets" / "History" sub-tab strip (`toolsSubTab`) —
+an implementation judgment call, not separately re-confirmed with the
+user, since stacking those three panels vertically under one "Tools"
+tab would have reintroduced the exact "space isn't used well" problem
+one level down; flagging it here per this project's own
+conservative-interpretation convention in case the user wants Tools
+un-nested instead.
+
+This required moving `QueryEditor`'s "Query"/"Data" sub-tab switcher
+(built in the first pass above) **out** of `QueryEditor` and up into
+`DbClientView`: it's now a controlled prop (`activeSubTab`) rather
+than `QueryEditor`'s own internal state, since "Query" and "Data" are
+now peers of "Tools" at the `DbClientView` level, not nested one level
+deeper inside the query editor. `QueryEditor` gained an
+`onRequestWorkspaceTab` callback so it can still ask the parent to
+switch back to "Query" when the user clicks "Run query" while viewing
+"Data" (previously handled by calling its own internal setter).
+Clicking a table in the sidebar's schema tree, loading a template,
+running a snippet, and replaying a history entry all now explicitly
+set `workspaceTab` to the right value from `DbClientView` itself, so
+each of those actions actually shows its result instead of silently
+updating a tab the user isn't currently looking at.
+
+### 11.2 — spreadsheet-style editable grid
+
+**What already existed** (confirmed by reading `ResultsGrid.tsx` and
+`gridEditHelpers.ts` first, per the task's own instruction, and
+`grid.go`'s `BrowseTableRows`/`UpdateTableRow`/`InsertTableRow`/
+`DeleteTableRows` bound methods): essentially the entire backend and
+most of the frontend editing mechanics already shipped in Phase 4
+(tasks 4.1-4.4) — in-place cell edit → real `UPDATE` by primary key,
+"+ Add row" → real `INSERT`, a checkbox-driven multi-row "Delete
+selected" → real `DELETE`, and a visible read-only banner + forced
+read-only fallback for primary-key-less tables (`isTableEditable`,
+`extractPkValues`, `isPkLessError` in `gridEditHelpers.ts`; primary-key
+detection also enforced server-side in `grid.go` via
+`primaryKeyColumns`/`ErrTableHasNoPrimaryKey`, so the frontend check is
+belt-and-suspenders, not the only guard). This meant 11.2 required
+**zero Go changes** — the "if new bound methods are needed" condition
+in this task's own testing-requirements section never triggered.
+
+**What changed** (purely interaction-model, in `ResultsGrid.tsx`):
+1. Cell editing now triggers on **double-click**, not single click — a
+   single click only selects a cell (new `selectedCell` state, shown
+   with a brass outline), matching TablePlus/DBeaver-style spreadsheet
+   clients per the user's explicit request, rather than this grid's
+   original single-click-to-edit Browse behavior.
+2. Added a **right-click row context menu** with "Delete row",
+   sharing the same delete path (`performDeleteRows`, refactored out of
+   the pre-existing `handleDeleteSelected`) as the checkbox-driven
+   multi-select "Delete selected" button, which was kept as-is rather
+   than removed — right-click delete is an *addition* for the common
+   single-row case, not a replacement of multi-row delete.
+3. **+ Add row" was already there and needed no changes.
+
+**Primary-key detection approach** (unchanged from Phase 4, confirmed
+still correct for this task): a table is editable only if at least one
+column has `IsPrimaryKey: true` in the `ColumnInfo` the Go side already
+returns from schema introspection (`isTableEditable`) — composite keys
+are supported (`extractPkValues` builds a value map across every PK
+column, matched by name against the result set's own column list,
+independent of ordering). This is enforced in two independent places:
+client-side before the user can even start editing (`tableIsEditable`
+gate) and server-side inside `grid.go` (`ErrTableHasNoPrimaryKey`),
+which is also what the client falls back to detecting live
+(`isPkLessError`) if the client and server ever disagree.
+
+**Judgment call — MongoDB not touched**: the task's own instructions
+asked whether 11.2 should touch Mongo's UI at all. Checked
+`MongoDocumentView.tsx`/`MongoDocumentTree.tsx` (Phase 5.2-5.5, already
+shipped): Mongo already has in-place document editing with JSON-
+structure validation, new-document creation, and delete-with-
+confirmation, entirely separate from the relational grid's row/column
+model (documents aren't rows with a single scalar primary key in the
+same sense). Conclusion: Mongo's existing document tree/editor already
+satisfies 11.2's actual goal ("see data, double-click or right-click to
+edit/delete, easy to use") for its own data model, and retrofitting the
+new double-click/right-click grid semantics onto it would mean forcing
+a relational-table paradigm onto a document store for no real user
+benefit. No Mongo UI changes made for 11.2 — flagging this explicitly
+since the task description left it as an open question rather than a
+decided scope point.
+
+### Testing
+
+No new pure-logic helper functions were introduced by either task —
+11.1 was a rendering/state-plumbing restructuring reusing existing,
+already-tested handlers (`gridEditHelpers.ts`, `resultsGridHelpers.ts`,
+`tabState.ts` all unchanged), and 11.2's only new logic
+(`performDeleteRows`, the double-click/right-click event wiring) is
+tightly coupled to `ResultsGrid`'s own component state and not
+meaningfully extractable as a standalone pure function — so no new
+`*Helpers.ts`/`*Helpers.test.ts` pair was added. All 244 pre-existing
+frontend unit tests continue to pass unmodified, both before and after
+the layout revision described above (`tsc --noEmit`, `pnpm run test`,
+and `pnpm run build` were all re-run clean after the pivot to
+top-level Query/Data/Tools tabs).
+
+Verification run: `go build ./...`, `go vet ./...`, `gofmt -l .`
+(clean), `go test ./...`, `go test -tags=integration ./...` (run twice
+back-to-back — both clean, no flakiness, expected since no Go source
+changed this session), `pnpm run build`, `pnpm run test` (244/244
+passing) — all green. No new synthetic profile/service IDs or
+`HostPort` literals were introduced (no Go test files touched), so the
+9990xx-collision class of bug from the prior session doesn't apply
+here.

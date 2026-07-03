@@ -13,9 +13,10 @@ import {
 } from '../../../wailsjs/go/main/App'
 import type {main, storage} from '../../../wailsjs/go/models'
 import MongoDocumentView from './MongoDocumentView'
-import QueryEditor, {type QueryEditorHandle} from './QueryEditor'
+import QueryEditor, {type QueryEditorHandle, type SchemaSnapshot} from './QueryEditor'
 import QueryHistoryPanel from './QueryHistoryPanel'
 import RedisKeyBrowser from './RedisKeyBrowser'
+import SchemaTree from './SchemaTree'
 import SnippetsPanel from './SnippetsPanel'
 import {resolveSnippetFilterScope} from './snippetFilterLogic'
 import {findMostRecentCompatibleConnection, resolveRunSnippetTarget, resolveSnippetConnectionSource} from './snippetRunLogic'
@@ -107,6 +108,19 @@ function labelForFields(fields: main.ConnectionFormFields): string {
     return `${fields.Engine}@${fields.Host}:${fields.Port}`
 }
 
+/**
+ * Shared pill-button styling for the two-level workspace tab nav
+ * (top-level "Query"/"Data"/"Tools" and the "Tools" tab's own "Templates"/
+ * "Snippets"/"History" sub-nav) — both use the same active/inactive visual
+ * language so switching between the two feels like one consistent tab
+ * system rather than two different UI patterns.
+ */
+function workspacePillClass(active: boolean): string {
+    return `rounded px-3 py-1 text-xs font-medium transition-colors ${
+        active ? 'bg-ink-800 text-brass-400' : 'text-ink-300 hover:text-ink-100'
+    }`
+}
+
 let tabIdSequence = 0
 
 function nextTabId(): string {
@@ -163,6 +177,36 @@ function DbClientView() {
     const [snippetsRefreshToken, setSnippetsRefreshToken] = useState(0)
     const editorHandlesRef = useRef<Map<string, QueryEditorHandle>>(new Map())
 
+    /**
+     * Mirrors every open SQL tab's own schema/session state (tasks.md 11.1),
+     * pushed up by that tab's own `QueryEditor` via `onSchemaUpdate` — see
+     * `QueryEditor.tsx`'s `SchemaSnapshot` doc comment for why this view
+     * never loads schema data itself. Only the active tab's entry is ever
+     * rendered (in the left sidebar's `SchemaTree`), but every open tab's
+     * entry is kept so switching tabs doesn't lose or re-fetch anything.
+     */
+    const [schemaSnapshots, setSchemaSnapshots] = useState<Map<string, SchemaSnapshot>>(new Map())
+    const schemaUpdateCallbacksRef = useRef<Map<string, (snapshot: SchemaSnapshot) => void>>(new Map())
+
+    const [showConnectionForm, setShowConnectionForm] = useState(true)
+
+    /**
+     * Top-level workspace tab for the center panel (revised per user
+     * feedback on the original 3-panel layout: "Tools" — template gallery,
+     * snippets, query history — used to be a permanent right-side column
+     * competing for width with the query/data area at all times, which
+     * wasted space when Tools wasn't being used and cramped it when it was.
+     * Now "Query"/"Data"/"Tools" are peer tabs occupying the full center
+     * width one at a time, matching the connection tabs' own visual
+     * language (`TabBar`) one level down. Shared across every open
+     * connection tab rather than per-tab, since only one connection tab is
+     * ever visible at a time anyway (see the `hidden`-class multi-mount
+     * pattern below) — switching connection tabs keeps whichever workspace
+     * tab was active.
+     */
+    const [workspaceTab, setWorkspaceTab] = useState<'query' | 'data' | 'tools'>('query')
+    const [toolsSubTab, setToolsSubTab] = useState<'templates' | 'snippets' | 'history'>('templates')
+
     const registerEditorHandle = useCallback((tabId: string, handle: QueryEditorHandle | null) => {
         if (handle) {
             editorHandlesRef.current.set(tabId, handle)
@@ -170,6 +214,35 @@ function DbClientView() {
             editorHandlesRef.current.delete(tabId)
         }
     }, [])
+
+    const handleSchemaUpdate = useCallback((tabId: string, snapshot: SchemaSnapshot) => {
+        setSchemaSnapshots((prev) => {
+            const next = new Map(prev)
+            next.set(tabId, snapshot)
+            return next
+        })
+    }, [])
+
+    /**
+     * Returns a stable per-tab callback reference for `QueryEditor`'s
+     * `onSchemaUpdate` prop (cached in `schemaUpdateCallbacksRef`, the same
+     * ref-map pattern `registerEditorHandle` already uses in this file). A
+     * fresh arrow function passed inline in JSX on every render would give
+     * `QueryEditor`'s internal effect a new dependency every render,
+     * re-running it constantly for no reason — caching by tab id avoids that
+     * without needing any snapshot-equality check.
+     */
+    const getSchemaUpdateCallback = useCallback(
+        (tabId: string) => {
+            let cached = schemaUpdateCallbacksRef.current.get(tabId)
+            if (!cached) {
+                cached = (snapshot: SchemaSnapshot) => handleSchemaUpdate(tabId, snapshot)
+                schemaUpdateCallbacksRef.current.set(tabId, cached)
+            }
+            return cached
+        },
+        [handleSchemaUpdate],
+    )
 
     const addSqlTab = useCallback((fields: main.ConnectionFormFields, label: string, initialQuery?: string) => {
         const tab: DbClientTab = {kind: 'sql', id: nextTabId(), label, fields, initialQuery}
@@ -294,6 +367,7 @@ function DbClientView() {
                 } else {
                     addSqlTab(fields, name)
                 }
+                setShowConnectionForm(false)
                 await refreshSavedConnections()
             } catch (err) {
                 setSavedConnectionsError(String(err))
@@ -311,6 +385,7 @@ function DbClientView() {
                 applyParsedFields(fields)
                 const savedConn = savedConnections.find((conn) => conn.ID === entry.ConnectionID)
                 addSqlTab(fields, savedConn ? savedConn.Name : labelForFields(fields), entry.QueryText)
+                setWorkspaceTab('query')
                 await refreshSavedConnections()
             } catch (err) {
                 setSavedConnectionsError(String(err))
@@ -343,6 +418,7 @@ function DbClientView() {
             if (target.kind === 'current-tab') {
                 const handle = editorHandlesRef.current.get(target.tabId)
                 handle?.loadQuery(snippet.Body)
+                setWorkspaceTab('query')
                 return
             }
 
@@ -355,9 +431,11 @@ function DbClientView() {
                     const fields = await ConnectUsingSavedConnection(source.connectionId)
                     const savedConn = savedConnections.find((conn) => conn.ID === source.connectionId)
                     addSqlTab(fields, savedConn ? savedConn.Name : labelForFields(fields), snippet.Body)
+                    setWorkspaceTab('query')
                     await refreshSavedConnections()
                 } else if (source.kind === 'reuse-active-tab' && activeTab && activeTab.kind === 'sql') {
                     addSqlTab(activeTab.fields, activeTab.label, snippet.Body)
+                    setWorkspaceTab('query')
                 } else {
                     setRunSnippetError(
                         `Snippet "${snippet.Name}" is global and no ${snippet.Engine} connection is open or saved — open or save a ${snippet.Engine} connection first.`,
@@ -397,6 +475,7 @@ function DbClientView() {
             }
             const handle = editorHandlesRef.current.get(currentTab.id)
             handle?.loadQuery(sql)
+            setWorkspaceTab('query')
         },
         [activeTabId, tabs],
     )
@@ -456,17 +535,20 @@ function DbClientView() {
                 setTestState('success')
                 setTestMessage('Connected successfully.')
                 addMongoTab(fields, labelForFields(fields))
+                setShowConnectionForm(false)
             } else if (fields.Engine === 'redis') {
                 const throwawaySessionID = await OpenRedisConnection(fields)
                 await CloseRedisSession(throwawaySessionID).catch(() => undefined)
                 setTestState('success')
                 setTestMessage('Connected successfully.')
                 addRedisTab(fields, labelForFields(fields))
+                setShowConnectionForm(false)
             } else {
                 await TestConnection(fields)
                 setTestState('success')
                 setTestMessage('Connected successfully.')
                 addSqlTab(fields, labelForFields(fields))
+                setShowConnectionForm(false)
             }
         } catch (err) {
             setTestState('error')
@@ -483,298 +565,455 @@ function DbClientView() {
             const result = closeTab(tabs, activeTabId, id)
             setTabs(result.tabs)
             setActiveTabId(result.activeTabId)
+            schemaUpdateCallbacksRef.current.delete(id)
+            setSchemaSnapshots((prev) => {
+                if (!prev.has(id)) {
+                    return prev
+                }
+                const next = new Map(prev)
+                next.delete(id)
+                return next
+            })
         },
         [activeTabId, tabs],
     )
 
     const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+    const activeSqlHandle = activeTab && activeTab.kind === 'sql' ? (editorHandlesRef.current.get(activeTab.id) ?? null) : null
+    const activeSchemaSnapshot = activeTab ? (schemaSnapshots.get(activeTab.id) ?? null) : null
     const snippetFilterScope = resolveSnippetFilterScope(
         activeTab ? {savedConnectionId: activeTab.fields.SavedConnectionID, engine: activeTab.fields.Engine} : null,
     )
 
+    const hasSqlTab = activeTab !== null && activeTab.kind === 'sql'
+    const hasNonSqlTab = activeTab !== null && activeTab.kind !== 'sql'
+    /**
+     * "Data" only exists as a concept for SQL tabs (Mongo/Redis's own single
+     * view already combines browse+edit) — if the user was on "Data" and
+     * then switches to a Mongo/Redis connection tab, or closes the last SQL
+     * tab, this clamps back to "Query"/"Browse" rather than showing an empty
+     * Data pane for a tab kind that doesn't support it.
+     */
+    const effectiveWorkspaceTab = workspaceTab === 'data' && !hasSqlTab ? 'query' : workspaceTab
+
     return (
-        <div className="flex flex-col gap-6">
+        <div className="flex h-full min-h-0 flex-col gap-4">
             <div>
                 <h1 className="text-xl font-semibold text-ink-100">DB Client</h1>
                 <p className="text-sm text-ink-400">
-                    Paste a connection string to autofill the form below, or fill in the fields manually.
+                    Connections and schema on the left; Query, Data, and Tools tabs on the right.
                 </p>
             </div>
 
-            <div className="flex flex-col gap-3 rounded border border-ink-800 bg-ink-900/40 p-4">
-                <div className="flex flex-col gap-1">
-                    <label htmlFor="paste-connection-url" className="text-xs uppercase tracking-widest text-ink-400">
-                        Paste connection URL
-                    </label>
-                    <input
-                        id="paste-connection-url"
-                        type="text"
-                        value={pasteValue}
-                        onChange={(e) => setPasteValue(e.target.value)}
-                        onBlur={() => void handlePasteBlur()}
-                        placeholder="postgres://user:password@host:5432/dbname?sslmode=require"
-                        className="rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-sm text-ink-100 outline-none focus:border-brass-500"
-                    />
-                    {parseError && <p className="text-xs text-red-400">{parseError}</p>}
-                </div>
+            <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
+                <aside className="flex w-72 shrink-0 flex-col gap-4 overflow-y-auto rounded border border-ink-800 bg-ink-900/40 p-3">
+                    <div className="flex flex-col gap-3">
+                        <div className="flex items-center justify-between">
+                            <h2 className="text-xs uppercase tracking-widest text-ink-400">Connections</h2>
+                            <button
+                                type="button"
+                                onClick={() => setShowConnectionForm((prev) => !prev)}
+                                className="rounded border border-ink-700 px-2 py-1 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400"
+                            >
+                                {showConnectionForm ? 'Hide form' : '+ New connection'}
+                            </button>
+                        </div>
 
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                    <div className="flex flex-col gap-1">
-                        <label htmlFor="conn-engine" className="text-xs uppercase tracking-widest text-ink-400">
-                            Engine
-                        </label>
-                        <select
-                            id="conn-engine"
-                            value={engine}
-                            onChange={(e) => setEngine(e.target.value as Engine)}
-                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
-                        >
-                            {ENGINE_OPTIONS.map((option) => (
-                                <option key={option.engine} value={option.engine}>
-                                    {option.label}
-                                </option>
+                        {showConnectionForm && (
+                            <div className="flex flex-col gap-3 rounded border border-ink-800 bg-ink-950/40 p-3">
+                                <div className="flex flex-col gap-1">
+                                    <label
+                                        htmlFor="paste-connection-url"
+                                        className="text-xs uppercase tracking-widest text-ink-400"
+                                    >
+                                        Paste connection URL
+                                    </label>
+                                                    <input
+                                        id="paste-connection-url"
+                                        type="text"
+                                        value={pasteValue}
+                                        onChange={(e) => setPasteValue(e.target.value)}
+                                        onBlur={() => void handlePasteBlur()}
+                                        placeholder="postgres://user:password@host:5432/dbname?sslmode=require"
+                                        className="rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-sm text-ink-100 outline-none focus:border-brass-500"
+                                    />
+                                    {parseError && <p className="text-xs text-red-400">{parseError}</p>}
+                                </div>
+
+                                <div className="flex flex-col gap-3">
+                                    <div className="flex flex-col gap-1">
+                                        <label htmlFor="conn-engine" className="text-xs uppercase tracking-widest text-ink-400">
+                                            Engine
+                                        </label>
+                                        <select
+                                            id="conn-engine"
+                                            value={engine}
+                                            onChange={(e) => setEngine(e.target.value as Engine)}
+                                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                                        >
+                                            {ENGINE_OPTIONS.map((option) => (
+                                                <option key={option.engine} value={option.engine}>
+                                                    {option.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <div className="flex flex-col gap-1">
+                                        <label htmlFor="conn-host" className="text-xs uppercase tracking-widest text-ink-400">
+                                            Host
+                                        </label>
+                                        <input
+                                            id="conn-host"
+                                            type="text"
+                                            value={host}
+                                            onChange={(e) => setHost(e.target.value)}
+                                            placeholder="localhost"
+                                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                                        />
+                                    </div>
+
+                                    <div className="flex flex-col gap-1">
+                                        <label htmlFor="conn-port" className="text-xs uppercase tracking-widest text-ink-400">
+                                            Port
+                                        </label>
+                                        <input
+                                            id="conn-port"
+                                            type="number"
+                                            value={port}
+                                            onChange={(e) => setPort(e.target.value)}
+                                            placeholder={String(ENGINE_OPTIONS.find((o) => o.engine === engine)?.defaultPort ?? '')}
+                                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                                        />
+                                    </div>
+
+                                    <div className="flex flex-col gap-1">
+                                        <label htmlFor="conn-username" className="text-xs uppercase tracking-widest text-ink-400">
+                                            Username
+                                        </label>
+                                        <input
+                                            id="conn-username"
+                                            type="text"
+                                            value={username}
+                                            onChange={(e) => setUsername(e.target.value)}
+                                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                                        />
+                                    </div>
+
+                                    <div className="flex flex-col gap-1">
+                                        <label htmlFor="conn-password" className="text-xs uppercase tracking-widest text-ink-400">
+                                            Password
+                                        </label>
+                                        <input
+                                            id="conn-password"
+                                            type="password"
+                                            value={password}
+                                            onChange={(e) => setPassword(e.target.value)}
+                                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                                        />
+                                    </div>
+
+                                    <div className="flex flex-col gap-1">
+                                        <label htmlFor="conn-database" className="text-xs uppercase tracking-widest text-ink-400">
+                                            Database
+                                        </label>
+                                        <input
+                                            id="conn-database"
+                                            type="text"
+                                            value={database}
+                                            onChange={(e) => setDatabase(e.target.value)}
+                                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-xs uppercase tracking-widest text-ink-400">Query params</span>
+                                        <button
+                                            type="button"
+                                            onClick={handleAddParamRow}
+                                            className="rounded border border-ink-700 px-2 py-1 text-xs text-ink-200 hover:border-brass-500 hover:text-brass-400"
+                                        >
+                                            + Add param
+                                        </button>
+                                    </div>
+                                    {paramRows.length === 0 && <p className="text-xs text-ink-500">No query params.</p>}
+                                    {paramRows.map((row, index) => (
+                                        <div key={index} className="flex items-center gap-2">
+                                            <input
+                                                type="text"
+                                                value={row.key}
+                                                onChange={(e) => handleParamKeyChange(index, e.target.value)}
+                                                placeholder="sslmode"
+                                                className="w-1/3 rounded border border-ink-700 bg-ink-950 px-2 py-1 font-mono text-xs text-ink-100 outline-none focus:border-brass-500"
+                                            />
+                                            <input
+                                                type="text"
+                                                value={row.value}
+                                                onChange={(e) => handleParamValueChange(index, e.target.value)}
+                                                placeholder="require"
+                                                className="flex-1 rounded border border-ink-700 bg-ink-950 px-2 py-1 font-mono text-xs text-ink-100 outline-none focus:border-brass-500"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => handleRemoveParamRow(index)}
+                                                className="rounded border border-red-800 px-2 py-1 text-xs text-red-400 hover:border-red-500 hover:text-red-300"
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="flex flex-col gap-2 pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleTestConnection()}
+                                        disabled={testState === 'testing' || host.trim().length === 0}
+                                        className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        {engine === 'mongodb' || engine === 'redis'
+                                            ? testState === 'testing'
+                                                ? 'Connecting…'
+                                                : 'Connect'
+                                            : testState === 'testing'
+                                              ? 'Testing…'
+                                              : 'Test connection'}
+                                    </button>
+                                    {testState === 'success' && <p className="text-sm text-emerald-400">{testMessage}</p>}
+                                    {testState === 'error' && <p className="text-sm text-red-400">{testMessage}</p>}
+                                </div>
+
+                                <div className="flex flex-col gap-2 border-t border-ink-800 pt-3">
+                                    <input
+                                        type="text"
+                                        value={saveName}
+                                        onChange={(e) => setSaveName(e.target.value)}
+                                        placeholder="Name this connection"
+                                        className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleSaveConnection()}
+                                        disabled={saveState === 'testing' || host.trim().length === 0 || saveName.trim().length === 0}
+                                        className="rounded border border-ink-700 px-4 py-2 text-sm font-medium text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        {saveState === 'testing' ? 'Saving…' : 'Save connection'}
+                                    </button>
+                                    {saveState === 'success' && <p className="text-sm text-emerald-400">{saveMessage}</p>}
+                                    {saveState === 'error' && <p className="text-sm text-red-400">{saveMessage}</p>}
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="flex flex-col gap-2">
+                            {savedConnectionsError && <p className="text-xs text-red-400">{savedConnectionsError}</p>}
+                            {savedConnections.length === 0 && !savedConnectionsError && (
+                                <p className="text-xs text-ink-500">No saved connections yet.</p>
+                            )}
+                            {savedConnections.map((conn) => (
+                                <div
+                                    key={conn.ID}
+                                    className="flex items-center justify-between gap-2 rounded border border-ink-800 bg-ink-950/60 px-2 py-1.5"
+                                >
+                                    <div className="flex min-w-0 flex-col">
+                                        <span className="truncate text-sm font-medium text-ink-100">{conn.Name}</span>
+                                        <span className="truncate font-mono text-[10px] text-ink-400">
+                                            {conn.Engine}://{conn.Host}:{conn.Port}
+                                            {conn.Database ? `/${conn.Database}` : ''}
+                                        </span>
+                                    </div>
+                                    <div className="flex shrink-0 items-center gap-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleLoadConnection(conn.ID, conn.Name)}
+                                            className="rounded border border-ink-700 px-2 py-1 text-[10px] text-ink-200 hover:border-brass-500 hover:text-brass-400"
+                                        >
+                                            Load
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleDeleteConnection(conn.ID, conn.Name)}
+                                            className="rounded border border-red-800 px-2 py-1 text-[10px] text-red-400 hover:border-red-500 hover:text-red-300"
+                                        >
+                                            Delete
+                                        </button>
+                                    </div>
+                                </div>
                             ))}
-                        </select>
+                        </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                        <label htmlFor="conn-host" className="text-xs uppercase tracking-widest text-ink-400">
-                            Host
-                        </label>
-                        <input
-                            id="conn-host"
-                            type="text"
-                            value={host}
-                            onChange={(e) => setHost(e.target.value)}
-                            placeholder="localhost"
-                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                    {activeTab && activeTab.kind === 'sql' && (
+                        <div className="flex flex-col gap-2 border-t border-ink-800 pt-3">
+                            <SchemaTree
+                                snapshot={activeSchemaSnapshot}
+                                onRefresh={() => void activeSqlHandle?.refreshSchema()}
+                                onNewTable={() => void activeSqlHandle?.openCreateTable()}
+                                onOpenTable={(schema, table) => {
+                                    setWorkspaceTab('data')
+                                    void activeSqlHandle?.browseTable(schema, table)
+                                }}
+                                onImport={(schema, table) => void activeSqlHandle?.openImport(schema, table)}
+                                onExportSchema={(schema, target) => void activeSqlHandle?.exportSchema(schema, target)}
+                            />
+                        </div>
+                    )}
+                </aside>
+
+                <main className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
+                    {tabs.length > 0 && (
+                        <TabBar
+                            tabs={tabs}
+                            activeTabId={activeTabId}
+                            onSelect={setActiveTabId}
+                            onClose={handleCloseTab}
+                            onNewTab={handleNewTab}
                         />
-                    </div>
+                    )}
 
-                    <div className="flex flex-col gap-1">
-                        <label htmlFor="conn-port" className="text-xs uppercase tracking-widest text-ink-400">
-                            Port
-                        </label>
-                        <input
-                            id="conn-port"
-                            type="number"
-                            value={port}
-                            onChange={(e) => setPort(e.target.value)}
-                            placeholder={String(ENGINE_OPTIONS.find((o) => o.engine === engine)?.defaultPort ?? '')}
-                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
-                        />
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                        <label htmlFor="conn-username" className="text-xs uppercase tracking-widest text-ink-400">
-                            Username
-                        </label>
-                        <input
-                            id="conn-username"
-                            type="text"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
-                        />
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                        <label htmlFor="conn-password" className="text-xs uppercase tracking-widest text-ink-400">
-                            Password
-                        </label>
-                        <input
-                            id="conn-password"
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
-                        />
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                        <label htmlFor="conn-database" className="text-xs uppercase tracking-widest text-ink-400">
-                            Database
-                        </label>
-                        <input
-                            id="conn-database"
-                            type="text"
-                            value={database}
-                            onChange={(e) => setDatabase(e.target.value)}
-                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
-                        />
-                    </div>
-                </div>
-
-                <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between">
-                        <span className="text-xs uppercase tracking-widest text-ink-400">Query params</span>
+                    <div className="flex items-center gap-1 rounded border border-ink-800 bg-ink-950/40 p-1 w-fit">
+                        {hasSqlTab && (
+                            <>
+                                <button
+                                    type="button"
+                                    onClick={() => setWorkspaceTab('query')}
+                                    aria-pressed={effectiveWorkspaceTab === 'query'}
+                                    className={workspacePillClass(effectiveWorkspaceTab === 'query')}
+                                >
+                                    Query
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setWorkspaceTab('data')}
+                                    aria-pressed={effectiveWorkspaceTab === 'data'}
+                                    className={workspacePillClass(effectiveWorkspaceTab === 'data')}
+                                >
+                                    Data
+                                </button>
+                            </>
+                        )}
+                        {hasNonSqlTab && (
+                            <button
+                                type="button"
+                                onClick={() => setWorkspaceTab('query')}
+                                aria-pressed={effectiveWorkspaceTab === 'query'}
+                                className={workspacePillClass(effectiveWorkspaceTab === 'query')}
+                            >
+                                Browse
+                            </button>
+                        )}
+                        {!hasSqlTab && !hasNonSqlTab && (
+                            <button
+                                type="button"
+                                onClick={() => setWorkspaceTab('query')}
+                                aria-pressed={effectiveWorkspaceTab === 'query'}
+                                className={workspacePillClass(effectiveWorkspaceTab === 'query')}
+                            >
+                                Query
+                            </button>
+                        )}
                         <button
                             type="button"
-                            onClick={handleAddParamRow}
-                            className="rounded border border-ink-700 px-2 py-1 text-xs text-ink-200 hover:border-brass-500 hover:text-brass-400"
+                            onClick={() => setWorkspaceTab('tools')}
+                            aria-pressed={effectiveWorkspaceTab === 'tools'}
+                            className={workspacePillClass(effectiveWorkspaceTab === 'tools')}
                         >
-                            + Add param
+                            Tools
                         </button>
                     </div>
-                    {paramRows.length === 0 && <p className="text-xs text-ink-500">No query params.</p>}
-                    {paramRows.map((row, index) => (
-                        <div key={index} className="flex items-center gap-2">
-                            <input
-                                type="text"
-                                value={row.key}
-                                onChange={(e) => handleParamKeyChange(index, e.target.value)}
-                                placeholder="sslmode"
-                                className="w-1/3 rounded border border-ink-700 bg-ink-950 px-2 py-1 font-mono text-xs text-ink-100 outline-none focus:border-brass-500"
-                            />
-                            <input
-                                type="text"
-                                value={row.value}
-                                onChange={(e) => handleParamValueChange(index, e.target.value)}
-                                placeholder="require"
-                                className="flex-1 rounded border border-ink-700 bg-ink-950 px-2 py-1 font-mono text-xs text-ink-100 outline-none focus:border-brass-500"
-                            />
-                            <button
-                                type="button"
-                                onClick={() => handleRemoveParamRow(index)}
-                                className="rounded border border-red-800 px-2 py-1 text-xs text-red-400 hover:border-red-500 hover:text-red-300"
-                            >
-                                Remove
-                            </button>
-                        </div>
-                    ))}
-                </div>
 
-                <div className="flex items-center gap-3 pt-1">
-                    <button
-                        type="button"
-                        onClick={() => void handleTestConnection()}
-                        disabled={testState === 'testing' || host.trim().length === 0}
-                        className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        {engine === 'mongodb' || engine === 'redis'
-                            ? testState === 'testing'
-                                ? 'Connecting…'
-                                : 'Connect'
-                            : testState === 'testing'
-                              ? 'Testing…'
-                              : 'Test connection'}
-                    </button>
-                    {testState === 'success' && <p className="text-sm text-emerald-400">{testMessage}</p>}
-                    {testState === 'error' && <p className="text-sm text-red-400">{testMessage}</p>}
-                </div>
-
-                <div className="flex items-center gap-3 border-t border-ink-800 pt-3">
-                    <input
-                        type="text"
-                        value={saveName}
-                        onChange={(e) => setSaveName(e.target.value)}
-                        placeholder="Name this connection"
-                        className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
-                    />
-                    <button
-                        type="button"
-                        onClick={() => void handleSaveConnection()}
-                        disabled={saveState === 'testing' || host.trim().length === 0 || saveName.trim().length === 0}
-                        className="rounded border border-ink-700 px-4 py-2 text-sm font-medium text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        {saveState === 'testing' ? 'Saving…' : 'Save connection'}
-                    </button>
-                    {saveState === 'success' && <p className="text-sm text-emerald-400">{saveMessage}</p>}
-                    {saveState === 'error' && <p className="text-sm text-red-400">{saveMessage}</p>}
-                </div>
-            </div>
-
-            <div className="flex flex-col gap-3 rounded border border-ink-800 bg-ink-900/40 p-4">
-                <h2 className="text-xs uppercase tracking-widest text-ink-400">Saved connections</h2>
-                {savedConnectionsError && <p className="text-xs text-red-400">{savedConnectionsError}</p>}
-                {savedConnections.length === 0 && !savedConnectionsError && (
-                    <p className="text-sm text-ink-500">No saved connections yet.</p>
-                )}
-                {savedConnections.map((conn) => (
-                    <div
-                        key={conn.ID}
-                        className="flex items-center justify-between gap-3 rounded border border-ink-800 bg-ink-950/60 px-3 py-2"
-                    >
-                        <div className="flex flex-col">
-                            <span className="text-sm font-medium text-ink-100">{conn.Name}</span>
-                            <span className="font-mono text-xs text-ink-400">
-                                {conn.Engine}://{conn.Host}:{conn.Port}
-                                {conn.Database ? `/${conn.Database}` : ''}
-                            </span>
-                            {conn.LastUsedAt && (
-                                <span className="text-xs text-ink-500">Last used {conn.LastUsedAt}</span>
-                            )}
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                type="button"
-                                onClick={() => void handleLoadConnection(conn.ID, conn.Name)}
-                                className="rounded border border-ink-700 px-3 py-1 text-xs text-ink-200 hover:border-brass-500 hover:text-brass-400"
-                            >
-                                Load
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => void handleDeleteConnection(conn.ID, conn.Name)}
-                                className="rounded border border-red-800 px-3 py-1 text-xs text-red-400 hover:border-red-500 hover:text-red-300"
-                            >
-                                Delete
-                            </button>
-                        </div>
+                    <div className={effectiveWorkspaceTab === 'tools' ? 'hidden' : 'flex flex-1 flex-col gap-3'}>
+                        {tabs.length === 0 && (
+                            <p className="text-sm text-ink-500">
+                                No open connections yet. Use the left sidebar's "+ New connection" form, or Load a
+                                saved connection, to get started.
+                            </p>
+                        )}
+                        {tabs.length > 0 && activeTabId === null && (
+                            <p className="text-sm text-ink-500">
+                                Load a saved connection from the left sidebar, or fill in the connection form and
+                                Test connection, to open a new tab.
+                            </p>
+                        )}
+                        {tabs.map((tab) => (
+                            <div key={tab.id} className={tab.id === activeTabId ? '' : 'hidden'}>
+                                {tab.kind === 'sql' ? (
+                                    <QueryEditor
+                                        ref={(handle) => registerEditorHandle(tab.id, handle)}
+                                        fields={tab.fields}
+                                        initialQuery={tab.initialQuery}
+                                        onSchemaUpdate={getSchemaUpdateCallback(tab.id)}
+                                        activeSubTab={effectiveWorkspaceTab === 'data' ? 'data' : 'query'}
+                                        onRequestWorkspaceTab={setWorkspaceTab}
+                                    />
+                                ) : tab.kind === 'mongo' ? (
+                                    <MongoDocumentView fields={tab.fields} />
+                                ) : (
+                                    <RedisKeyBrowser fields={tab.fields} />
+                                )}
+                            </div>
+                        ))}
                     </div>
-                ))}
-            </div>
 
-            <SnippetsPanel
-                savedConnections={savedConnections}
-                onRun={(snippet) => void handleRunSnippet(snippet)}
-                runError={runSnippetError}
-                activeConnectionId={snippetFilterScope.connectionId}
-                activeEngine={snippetFilterScope.engine}
-                refreshToken={snippetsRefreshToken}
-            />
-
-            <TemplateGallery
-                activeEngine={activeTab ? activeTab.fields.Engine : null}
-                onLoad={handleLoadTemplate}
-                loadError={templateLoadError}
-                onSaved={() => setSnippetsRefreshToken((token) => token + 1)}
-            />
-
-            <QueryHistoryPanel savedConnections={savedConnections} onReplay={(entry) => void handleReplayEntry(entry)} />
-
-            {tabs.length > 0 && (
-                <div className="flex flex-col gap-3">
-                    <TabBar
-                        tabs={tabs}
-                        activeTabId={activeTabId}
-                        onSelect={setActiveTabId}
-                        onClose={handleCloseTab}
-                        onNewTab={handleNewTab}
-                    />
-                    {tabs.map((tab) => (
-                        <div key={tab.id} className={tab.id === activeTabId ? '' : 'hidden'}>
-                            {tab.kind === 'sql' ? (
-                                <QueryEditor
-                                    ref={(handle) => registerEditorHandle(tab.id, handle)}
-                                    fields={tab.fields}
-                                    initialQuery={tab.initialQuery}
-                                />
-                            ) : tab.kind === 'mongo' ? (
-                                <MongoDocumentView fields={tab.fields} />
-                            ) : (
-                                <RedisKeyBrowser fields={tab.fields} />
-                            )}
+                    <div className={effectiveWorkspaceTab === 'tools' ? 'flex flex-1 flex-col gap-3' : 'hidden'}>
+                        <div className="flex items-center gap-1 rounded border border-ink-800 bg-ink-950/40 p-1 w-fit">
+                            <button
+                                type="button"
+                                onClick={() => setToolsSubTab('templates')}
+                                aria-pressed={toolsSubTab === 'templates'}
+                                className={workspacePillClass(toolsSubTab === 'templates')}
+                            >
+                                Templates
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setToolsSubTab('snippets')}
+                                aria-pressed={toolsSubTab === 'snippets'}
+                                className={workspacePillClass(toolsSubTab === 'snippets')}
+                            >
+                                Snippets
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setToolsSubTab('history')}
+                                aria-pressed={toolsSubTab === 'history'}
+                                className={workspacePillClass(toolsSubTab === 'history')}
+                            >
+                                History
+                            </button>
                         </div>
-                    ))}
-                    {activeTabId === null && (
-                        <p className="text-sm text-ink-500">
-                            Fill in the connection form above, then Test connection or Load a saved connection to
-                            open a new tab.
-                        </p>
-                    )}
-                </div>
-            )}
+
+                        {toolsSubTab === 'templates' && (
+                            <TemplateGallery
+                                activeEngine={activeTab ? activeTab.fields.Engine : null}
+                                onLoad={handleLoadTemplate}
+                                loadError={templateLoadError}
+                                onSaved={() => setSnippetsRefreshToken((token) => token + 1)}
+                            />
+                        )}
+
+                        {toolsSubTab === 'snippets' && (
+                            <SnippetsPanel
+                                savedConnections={savedConnections}
+                                onRun={(snippet) => void handleRunSnippet(snippet)}
+                                runError={runSnippetError}
+                                activeConnectionId={snippetFilterScope.connectionId}
+                                activeEngine={snippetFilterScope.engine}
+                                refreshToken={snippetsRefreshToken}
+                            />
+                        )}
+
+                        {toolsSubTab === 'history' && (
+                            <QueryHistoryPanel
+                                savedConnections={savedConnections}
+                                onReplay={(entry) => void handleReplayEntry(entry)}
+                            />
+                        )}
+                    </div>
+                </main>
+            </div>
         </div>
     )
 }

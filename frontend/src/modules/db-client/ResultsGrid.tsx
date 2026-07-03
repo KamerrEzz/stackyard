@@ -73,9 +73,19 @@ function cellErrorKey(rowIndex: number, colIndex: number): string {
  * Grid for one `Engine.Query`/`BrowseTableRows` result: column headers with
  * type metadata, NULL-aware cell rendering, and pagination over `result.Rows`.
  * When `editable` is supplied, adds in-place cell editing, row insert, and
- * row delete (tasks.md 4.1-4.4) bound to that exact table/schema/session; a
+ * row delete (tasks.md 4.1-4.4, extended to a spreadsheet-style interaction
+ * model by tasks.md 11.2) bound to that exact table/schema/session; a
  * table with no primary key column renders a visible read-only banner
  * instead of silently disabling interaction.
+ *
+ * Cell interaction (tasks.md 11.2): a single click only selects a cell
+ * (`selectedCell`, shown with a brass outline) — double-click is what
+ * enters inline-edit mode, matching TablePlus/DBeaver-style clients rather
+ * than this grid's earlier single-click-to-edit behavior. Right-clicking a
+ * row opens a small context menu with "Delete row", sharing the same
+ * `performDeleteRows` path as the pre-existing checkbox multi-select
+ * "Delete selected" button — the two differ only in which row indexes they
+ * pass in and their own confirmation prompt.
  *
  * Pagination has two distinct modes, chosen per instance, never mixed:
  *   - Client-side (default): `result.Rows` is assumed to already be the full
@@ -96,6 +106,7 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
     const [page, setPage] = useState(1)
     const [rows, setRows] = useState<unknown[][]>(result.Rows ?? [])
     const [fetchedRowCount, setFetchedRowCount] = useState(result.Rows?.length ?? 0)
+    const [selectedCell, setSelectedCell] = useState<{rowIndex: number; colIndex: number} | null>(null)
     const [editingCell, setEditingCell] = useState<{rowIndex: number; colIndex: number} | null>(null)
     const [editingValue, setEditingValue] = useState('')
     const [cellErrors, setCellErrors] = useState<Map<string, string>>(new Map())
@@ -105,11 +116,13 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
     const [deleting, setDeleting] = useState(false)
     const [deleteError, setDeleteError] = useState<string | null>(null)
     const [forcedReadOnly, setForcedReadOnly] = useState(false)
+    const [contextMenu, setContextMenu] = useState<{rowIndex: number; x: number; y: number} | null>(null)
 
     useEffect(() => {
         setPage(1)
         setRows(result.Rows ?? [])
         setFetchedRowCount(result.Rows?.length ?? 0)
+        setSelectedCell(null)
         setEditingCell(null)
         setEditingValue('')
         setCellErrors(new Map())
@@ -118,7 +131,21 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
         setPendingRows([])
         setDeleteError(null)
         setForcedReadOnly(false)
+        setContextMenu(null)
     }, [result])
+
+    useEffect(() => {
+        if (!contextMenu) {
+            return
+        }
+        const closeMenu = () => setContextMenu(null)
+        window.addEventListener('click', closeMenu)
+        window.addEventListener('scroll', closeMenu, true)
+        return () => {
+            window.removeEventListener('click', closeMenu)
+            window.removeEventListener('scroll', closeMenu, true)
+        }
+    }, [contextMenu])
 
     const columns = result.Columns ?? []
     const columnNames = useMemo(() => columns.map((column) => column.Name), [columns])
@@ -142,6 +169,17 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
         }
     }
 
+    function selectCell(rowIndex: number, colIndex: number) {
+        setSelectedCell({rowIndex, colIndex})
+    }
+
+    /**
+     * Enters inline-edit mode for one cell, triggered only by a double-click
+     * (tasks.md 11.2's spreadsheet-style paradigm: single click selects a
+     * cell, double-click edits it — matching TablePlus/DBeaver-style
+     * clients rather than this grid's earlier single-click-to-edit Browse
+     * behavior).
+     */
     function startEditingCell(rowIndex: number, colIndex: number, currentValue: unknown) {
         if (!tableIsEditable) {
             return
@@ -266,21 +304,23 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
         })
     }
 
-    async function handleDeleteSelected() {
-        if (!editable || selectedRows.size === 0) {
+    /**
+     * Shared delete path for both the checkbox-driven multi-row "Delete
+     * selected" action and the single-row right-click context menu's
+     * "Delete row" action (tasks.md 11.2). Both ultimately call the same
+     * `DeleteTableRows` bound method with one or more primary-key value
+     * sets; the only difference between callers is which row indexes they
+     * pass in and their own confirmation prompt.
+     */
+    async function performDeleteRows(indexes: number[]) {
+        if (!editable || indexes.length === 0) {
             return
         }
-        if (selectedRows.size > 1) {
-            const confirmed = window.confirm(`Delete ${selectedRows.size} rows? This cannot be undone.`)
-            if (!confirmed) {
-                return
-            }
-        }
 
-        const indexes = Array.from(selectedRows).sort((a, b) => a - b)
+        const sortedIndexes = [...indexes].sort((a, b) => a - b)
         const pkValuesList: Record<string, unknown>[] = []
         const validIndexes: number[] = []
-        for (const index of indexes) {
+        for (const index of sortedIndexes) {
             const pkValues = extractPkValues(editableColumns, columnNames, rows[index])
             if (pkValues) {
                 pkValuesList.push(pkValues)
@@ -321,6 +361,35 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
         } finally {
             setDeleting(false)
         }
+    }
+
+    async function handleDeleteSelected() {
+        if (selectedRows.size === 0) {
+            return
+        }
+        if (selectedRows.size > 1) {
+            const confirmed = window.confirm(`Delete ${selectedRows.size} rows? This cannot be undone.`)
+            if (!confirmed) {
+                return
+            }
+        }
+        await performDeleteRows(Array.from(selectedRows))
+    }
+
+    /**
+     * Right-click row context menu's "Delete row" (tasks.md 11.2's minimum
+     * requirement). Always confirms regardless of count — unlike the
+     * checkbox path above, which only confirms for 2+ rows — matching this
+     * codebase's own convention for other single-item destructive actions
+     * (e.g. `DbClientView.handleDeleteConnection`, `SnippetsPanel.handleDelete`),
+     * both of which always confirm a lone delete.
+     */
+    async function handleContextMenuDeleteRow(rowIndex: number) {
+        setContextMenu(null)
+        if (!window.confirm('Delete this row? This cannot be undone.')) {
+            return
+        }
+        await performDeleteRows([rowIndex])
     }
 
     return (
@@ -426,7 +495,18 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
                             const rowIndex = pageStartOffset + rowIndexInPage
                             const rowError = rowErrors.get(rowIndex)
                             return (
-                                <tr key={rowIndex} className="odd:bg-ink-950/40">
+                                <tr
+                                    key={rowIndex}
+                                    className="odd:bg-ink-950/40"
+                                    onContextMenu={(e) => {
+                                        if (!tableIsEditable) {
+                                            return
+                                        }
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        setContextMenu({rowIndex, x: e.clientX, y: e.clientY})
+                                    }}
+                                >
                                     {tableIsEditable && (
                                         <td className="border-b border-ink-900 px-2 py-1.5">
                                             <input
@@ -440,13 +520,18 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
                                         const display = describeCell(cell)
                                         const isEditing =
                                             editingCell?.rowIndex === rowIndex && editingCell?.colIndex === cellIndex
+                                        const isSelected =
+                                            selectedCell?.rowIndex === rowIndex && selectedCell?.colIndex === cellIndex
                                         const cellError = cellErrors.get(cellErrorKey(rowIndex, cellIndex))
 
                                         return (
                                             <td
                                                 key={cellIndex}
-                                                onClick={() => !isEditing && startEditingCell(rowIndex, cellIndex, cell)}
-                                                className="border-b border-ink-900 px-3 py-1.5 font-mono text-ink-200"
+                                                onClick={() => !isEditing && selectCell(rowIndex, cellIndex)}
+                                                onDoubleClick={() => startEditingCell(rowIndex, cellIndex, cell)}
+                                                className={`border-b border-ink-900 px-3 py-1.5 font-mono text-ink-200 ${
+                                                    isSelected && !isEditing ? 'outline outline-1 outline-brass-500' : ''
+                                                }`}
                                             >
                                                 {isEditing ? (
                                                     <input
@@ -549,6 +634,25 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
                             Next
                         </button>
                     </div>
+                </div>
+            )}
+
+            {contextMenu && (
+                <div
+                    role="menu"
+                    onClick={(e) => e.stopPropagation()}
+                    style={{position: 'fixed', top: contextMenu.y, left: contextMenu.x, zIndex: 50}}
+                    className="min-w-[140px] rounded border border-ink-700 bg-ink-900 py-1 shadow-lg"
+                >
+                    <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => void handleContextMenuDeleteRow(contextMenu.rowIndex)}
+                        disabled={deleting}
+                        className="block w-full px-3 py-1.5 text-left text-xs text-red-400 hover:bg-ink-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        Delete row
+                    </button>
                 </div>
             )}
         </div>

@@ -29,31 +29,74 @@ import ResultsGrid, {type EditableGridContext} from './ResultsGrid'
 import {registerModelSchemaProvider, unregisterModelSchemaProvider} from './schemaCompletion'
 import {ensureSqlCompletionProviderRegistered} from './schemaCompletionProvider'
 
+export type SchemaState = 'idle' | 'loading' | 'loaded' | 'error'
+export type SchemaExportState = 'idle' | 'exporting' | 'saved' | 'error'
+export type SchemaExportTarget = 'prisma' | 'drizzle'
+
+export interface SchemaEntry {
+    schema: string
+    tables: dbengine.TableInfo[]
+}
+
+/**
+ * Mirrors this tab's own schema/session state up to `DbClientView` (tasks.md
+ * 11.1) so the left sidebar's `SchemaTree` — rendered outside this
+ * component's own subtree entirely — can show the active tab's schema
+ * without owning any connection/session state of its own. Pushed via
+ * `onSchemaUpdate` any time the underlying state changes; `DbClientView`
+ * only ever reads the most recently pushed snapshot per tab id.
+ */
+export interface SchemaSnapshot {
+    state: SchemaState
+    error: string | null
+    entries: SchemaEntry[]
+    exportState: SchemaExportState
+    exportMessage: string | null
+}
+
+export type QueryEditorSubTab = 'query' | 'data'
+
 interface QueryEditorProps {
     fields: main.ConnectionFormFields
     initialQuery?: string
+    onSchemaUpdate?: (snapshot: SchemaSnapshot) => void
+    /**
+     * Which of this tab's two views to render — "Query" (the SQL editor +
+     * run/results) or "Data" (the browsed table grid) — now controlled by
+     * `DbClientView` (tasks.md 11.1's revised top-level tab nav) rather than
+     * owned internally, since "Query"/"Data"/"Tools" are peer tabs at the
+     * DbClientView level, not nested inside this component.
+     */
+    activeSubTab: QueryEditorSubTab
+    /**
+     * Lets this component ask the parent to switch the shared workspace tab
+     * back to "Query" — used when the user clicks "Run query" while viewing
+     * "Data", so the just-produced result is actually visible.
+     */
+    onRequestWorkspaceTab?: (tab: QueryEditorSubTab) => void
 }
 
 /**
  * Imperative surface a parent can use to command an already-mounted tab's
- * editor from outside (tasks.md 4.7): checking whether the tab has unsaved
- * work, and replacing its query text (e.g. loading a snippet's body into
- * the current tab) without remounting the tab or touching its connection.
+ * editor from outside (tasks.md 4.7, extended by 11.1's sidebar schema
+ * tree): checking whether the tab has unsaved work, replacing its query
+ * text (e.g. loading a snippet's body into the current tab), and driving
+ * every schema-tree quick action (refresh schema, new table, browse a
+ * table, import into a table, export a schema) from the sidebar without
+ * that sidebar needing to know anything about sessions or connections
+ * itself — this component still owns all of that internally.
  */
 export interface QueryEditorHandle {
     isDirty(): boolean
     loadQuery(text: string): void
+    refreshSchema(): Promise<void>
+    openCreateTable(): Promise<void>
+    browseTable(schema: string, table: dbengine.TableInfo): Promise<void>
+    openImport(schema: string, table: dbengine.TableInfo): Promise<void>
+    exportSchema(schema: string, target: SchemaExportTarget): Promise<void>
 }
 
 type RunState = 'idle' | 'connecting' | 'running' | 'success' | 'error'
-type SchemaState = 'idle' | 'loading' | 'loaded' | 'error'
-type SchemaExportState = 'idle' | 'exporting' | 'saved' | 'error'
-type SchemaExportTarget = 'prisma' | 'drizzle'
-
-interface SchemaEntry {
-    schema: string
-    tables: dbengine.TableInfo[]
-}
 
 const DEFAULT_QUERY = '-- Write a query and click "Run query"\nSELECT 1;'
 
@@ -81,7 +124,10 @@ function monacoLanguageForEngine(engine: main.ConnectionFormFields['Engine']): s
     }
 }
 
-const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function QueryEditor({fields, initialQuery}, ref) {
+const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function QueryEditor(
+    {fields, initialQuery, onSchemaUpdate, activeSubTab, onRequestWorkspaceTab},
+    ref,
+) {
     const [query, setQuery] = useState(initialQuery ?? DEFAULT_QUERY)
     const [runState, setRunState] = useState<RunState>('idle')
     const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -118,17 +164,6 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
      */
     const baselineQueryRef = useRef(initialQuery ?? DEFAULT_QUERY)
 
-    useImperativeHandle(
-        ref,
-        () => ({
-            isDirty: () => query !== baselineQueryRef.current,
-            loadQuery: (text: string) => {
-                baselineQueryRef.current = text
-                setQuery(text)
-            },
-        }),
-        [query],
-    )
 
     useEffect(() => {
         return () => {
@@ -206,6 +241,7 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
      * renders as the per-statement list instead (see the render below).
      */
     const handleRunQuery = useCallback(async () => {
+        onRequestWorkspaceTab?.('query')
         setErrorMessage(null)
         setRunState(sessionIdRef.current ? 'running' : 'connecting')
         try {
@@ -238,7 +274,7 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
             setErrorMessage(String(err))
             setRunState('error')
         }
-    }, [ensureSession, query])
+    }, [ensureSession, query, onRequestWorkspaceTab])
 
     /**
      * "Browse" (tasks.md 4.1's View requirement, wired from the Tables list
@@ -251,6 +287,7 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
      */
     const handleBrowseTable = useCallback(
         async (schema: string, table: dbengine.TableInfo) => {
+            onRequestWorkspaceTab?.('data')
             setBrowseError(null)
             setBrowsing(true)
             try {
@@ -269,7 +306,7 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
                 setBrowsing(false)
             }
         },
-        [ensureSession],
+        [ensureSession, onRequestWorkspaceTab],
     )
 
     /**
@@ -385,6 +422,41 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
         [ensureSession],
     )
 
+    useImperativeHandle(
+        ref,
+        () => ({
+            isDirty: () => query !== baselineQueryRef.current,
+            loadQuery: (text: string) => {
+                baselineQueryRef.current = text
+                setQuery(text)
+            },
+            refreshSchema: () => handleRefreshSchema(),
+            openCreateTable: () => handleOpenCreateTable(),
+            browseTable: (schema: string, table: dbengine.TableInfo) => handleBrowseTable(schema, table),
+            openImport: (schema: string, table: dbengine.TableInfo) => handleOpenImport(schema, table),
+            exportSchema: (schema: string, target: SchemaExportTarget) => handleExportSchema(schema, target),
+        }),
+        [query, handleRefreshSchema, handleOpenCreateTable, handleBrowseTable, handleOpenImport, handleExportSchema],
+    )
+
+    /**
+     * Pushes this tab's schema/session state up to `DbClientView` (tasks.md
+     * 11.1) every time it changes, so the left sidebar's `SchemaTree` can
+     * render the active tab's schema without this component rendering that
+     * tree itself. `onSchemaUpdate` is expected to be a stable per-tab
+     * function reference (see `DbClientView`'s callback cache) — if it
+     * weren't, this effect would still be correct, just less efficient.
+     */
+    useEffect(() => {
+        onSchemaUpdate?.({
+            state: schemaState,
+            error: schemaError,
+            entries: schemaEntries,
+            exportState: schemaExportState,
+            exportMessage: schemaExportMessage,
+        })
+    }, [schemaState, schemaError, schemaEntries, schemaExportState, schemaExportMessage, onSchemaUpdate])
+
     /**
      * After a successful import, refreshes the currently browsed grid only
      * when it is browsing the exact table just imported into — otherwise an
@@ -454,177 +526,106 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
     return (
         <div className="flex flex-col gap-3 rounded border border-ink-800 bg-ink-900/40 p-4">
             <div className="flex items-center justify-between">
-                <h2 className="text-xs uppercase tracking-widest text-ink-400">Query editor</h2>
-                <div className="flex items-center gap-3">
-                    {schemaState === 'error' && schemaError && (
-                        <span className="text-xs text-red-400" title={schemaError}>
-                            Schema unavailable
-                        </span>
-                    )}
-                    <button
-                        type="button"
-                        onClick={() => void handleRefreshSchema()}
-                        disabled={schemaState === 'loading'}
-                        className="rounded border border-ink-700 px-2 py-1 text-xs text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        {schemaState === 'loading' ? 'Loading schema…' : 'Refresh schema'}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => void handleOpenCreateTable()}
-                        className="rounded border border-ink-700 px-2 py-1 text-xs text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400"
-                    >
-                        + New table
-                    </button>
-                    <span className="font-mono text-xs text-ink-500">{fields.Engine}</span>
-                </div>
+                <span className="text-xs uppercase tracking-widest text-ink-400">
+                    {activeSubTab === 'query'
+                        ? 'Query'
+                        : `Data${browseContext ? ` — ${browseContext.schema}.${browseContext.table}` : ''}`}
+                </span>
+                <span className="font-mono text-xs text-ink-500">{fields.Engine}</span>
             </div>
 
-            {schemaEntries.length > 0 && (
-                <div className="flex flex-col gap-1 rounded border border-ink-800 bg-ink-950/40 p-2">
-                    <span className="text-[10px] uppercase tracking-widest text-ink-500">Tables</span>
-                    <div className="flex max-h-48 flex-col gap-2 overflow-auto">
-                        {schemaEntries.map((entry) => (
-                            <div key={entry.schema} className="flex flex-col gap-1">
-                                <div className="flex items-center justify-between gap-2">
-                                    <span className="font-mono text-[10px] text-ink-500">{entry.schema}</span>
-                                    <div className="flex items-center gap-1">
-                                        <span className="text-[10px] uppercase tracking-widest text-ink-600">Export schema</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => void handleExportSchema(entry.schema, 'prisma')}
-                                            disabled={schemaExportState === 'exporting'}
-                                            className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                            Prisma
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => void handleExportSchema(entry.schema, 'drizzle')}
-                                            disabled={schemaExportState === 'exporting'}
-                                            className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                            Drizzle
-                                        </button>
-                                    </div>
-                                </div>
-                                {entry.tables.map((table) => (
-                                    <div
-                                        key={`${entry.schema}.${table.Name}`}
-                                        className="flex items-center justify-between gap-2 text-xs text-ink-300"
-                                    >
-                                        <span className="font-mono">
-                                            {entry.schema}.{table.Name}
-                                        </span>
-                                        <div className="flex items-center gap-1">
-                                            <button
-                                                type="button"
-                                                onClick={() => void handleBrowseTable(entry.schema, table)}
-                                                disabled={browsing}
-                                                className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
-                                            >
-                                                Browse
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => void handleOpenImport(entry.schema, table)}
-                                                className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400"
-                                            >
-                                                Import
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        ))}
-                    </div>
-                    {browseError && <span className="text-xs text-red-400">{browseError}</span>}
-                    {schemaExportState === 'saved' && schemaExportMessage && (
-                        <span className="text-xs text-emerald-400">{schemaExportMessage}</span>
-                    )}
-                    {schemaExportState === 'error' && schemaExportMessage && (
-                        <span className="text-xs text-red-400">{schemaExportMessage}</span>
-                    )}
-                </div>
-            )}
-
-            <div className="overflow-hidden rounded border border-ink-700">
-                <Editor
-                    height="220px"
-                    language={monacoLanguageForEngine(fields.Engine)}
-                    theme="vs-dark"
-                    value={query}
-                    onChange={(value) => setQuery(value ?? '')}
-                    onMount={handleEditorMount}
-                    options={{
-                        minimap: {enabled: false},
-                        fontSize: 13,
-                        scrollBeyondLastLine: false,
-                        automaticLayout: true,
-                    }}
-                />
-            </div>
-
-            <div className="flex items-center gap-3">
-                <button
-                    type="button"
-                    onClick={() => void handleRunQuery()}
-                    disabled={isRunning || query.trim().length === 0}
-                    className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                    {runState === 'connecting' ? 'Connecting…' : runState === 'running' ? 'Running…' : 'Run query'}
-                </button>
-                {isRunning && (
-                    <button
-                        type="button"
-                        onClick={() => void handleCancelQuery()}
-                        className="rounded border border-red-800 px-4 py-2 text-sm font-medium text-red-400 transition-colors hover:border-red-500 hover:text-red-300"
-                    >
-                        Cancel
-                    </button>
-                )}
-                {runState === 'success' && result && (
-                    <span className="text-sm text-emerald-400">
-                        {result.RowsAffected > 0
-                            ? `${result.RowsAffected} row(s) affected`
-                            : `${result.Rows?.length ?? 0} row(s) returned`}{' '}
-                        in {(result.Duration / 1_000_000).toFixed(1)}ms
-                    </span>
-                )}
-                {runState === 'success' && multiStatementResults && (
-                    <span className="text-sm text-emerald-400">{summarizeStatementResults(multiStatementResults)}</span>
-                )}
-                {runState === 'error' && errorMessage && <span className="text-sm text-red-400">{errorMessage}</span>}
-            </div>
-
-            {browseResult && browseContext ? (
-                <div className="flex flex-col gap-2">
-                    <ExportControls formats={describeExportScope(true).availableFormats} onExport={handleExportTable} />
-                    <ResultsGrid
-                        result={browseResult}
-                        editable={browseContext}
-                        onRequestPage={handleRequestBrowsePage}
-                        pageOffset={browseOffset}
-                        pageLimit={BROWSE_PAGE_SIZE}
-                        pageLoading={browsing}
-                    />
-                </div>
-            ) : multiStatementResults ? (
-                <div className="flex flex-col gap-2">
-                    {multiStatementResults.map((statementResult, index) => (
-                        <StatementResultItem key={index} result={statementResult} onExportResult={handleExportResult} />
-                    ))}
-                </div>
-            ) : (
-                result && (
-                    <div className="flex flex-col gap-2">
-                        <ExportControls
-                            formats={describeExportScope(false).availableFormats}
-                            onExport={(format) => handleExportResult(result, format)}
+            {activeSubTab === 'query' ? (
+                <>
+                    <div className="overflow-hidden rounded border border-ink-700">
+                        <Editor
+                            height="220px"
+                            language={monacoLanguageForEngine(fields.Engine)}
+                            theme="vs-dark"
+                            value={query}
+                            onChange={(value) => setQuery(value ?? '')}
+                            onMount={handleEditorMount}
+                            options={{
+                                minimap: {enabled: false},
+                                fontSize: 13,
+                                scrollBeyondLastLine: false,
+                                automaticLayout: true,
+                            }}
                         />
-                        <ResultsGrid result={result} />
                     </div>
-                )
+
+                    <div className="flex items-center gap-3">
+                        <button
+                            type="button"
+                            onClick={() => void handleRunQuery()}
+                            disabled={isRunning || query.trim().length === 0}
+                            className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            {runState === 'connecting' ? 'Connecting…' : runState === 'running' ? 'Running…' : 'Run query'}
+                        </button>
+                        {isRunning && (
+                            <button
+                                type="button"
+                                onClick={() => void handleCancelQuery()}
+                                className="rounded border border-red-800 px-4 py-2 text-sm font-medium text-red-400 transition-colors hover:border-red-500 hover:text-red-300"
+                            >
+                                Cancel
+                            </button>
+                        )}
+                        {runState === 'success' && result && (
+                            <span className="text-sm text-emerald-400">
+                                {result.RowsAffected > 0
+                                    ? `${result.RowsAffected} row(s) affected`
+                                    : `${result.Rows?.length ?? 0} row(s) returned`}{' '}
+                                in {(result.Duration / 1_000_000).toFixed(1)}ms
+                            </span>
+                        )}
+                        {runState === 'success' && multiStatementResults && (
+                            <span className="text-sm text-emerald-400">{summarizeStatementResults(multiStatementResults)}</span>
+                        )}
+                        {runState === 'error' && errorMessage && <span className="text-sm text-red-400">{errorMessage}</span>}
+                    </div>
+
+                    {multiStatementResults ? (
+                        <div className="flex flex-col gap-2">
+                            {multiStatementResults.map((statementResult, index) => (
+                                <StatementResultItem key={index} result={statementResult} onExportResult={handleExportResult} />
+                            ))}
+                        </div>
+                    ) : (
+                        result && (
+                            <div className="flex flex-col gap-2">
+                                <ExportControls
+                                    formats={describeExportScope(false).availableFormats}
+                                    onExport={(format) => handleExportResult(result, format)}
+                                />
+                                <ResultsGrid result={result} />
+                            </div>
+                        )
+                    )}
+                </>
+            ) : (
+                <div className="flex flex-col gap-2">
+                    {browseError && <p className="text-xs text-red-400">{browseError}</p>}
+                    {browseResult && browseContext ? (
+                        <>
+                            <ExportControls formats={describeExportScope(true).availableFormats} onExport={handleExportTable} />
+                            <ResultsGrid
+                                result={browseResult}
+                                editable={browseContext}
+                                onRequestPage={handleRequestBrowsePage}
+                                pageOffset={browseOffset}
+                                pageLimit={BROWSE_PAGE_SIZE}
+                                pageLoading={browsing}
+                            />
+                        </>
+                    ) : (
+                        <p className="text-sm text-ink-500">
+                            {browsing
+                                ? 'Loading table data…'
+                                : "Click a table in the left sidebar's schema tree to browse its data here."}
+                        </p>
+                    )}
+                </div>
             )}
 
             {importTarget && (
