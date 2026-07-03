@@ -85,3 +85,45 @@ describe('describeCell', () => {
         expect(describeCell(false)).toEqual({isNull: false, text: 'false'})
     })
 })
+
+describe('describeServerPage', () => {
+    it('marks the first page with a full page of rows as having a next page but no previous page', () => {
+        const info = describeServerPage(0, 100, 100, 100)
+
+        expect(info.pageNumber).toBe(1)
+        expect(info.startIndex).toBe(1)
+        expect(info.endIndex).toBe(100)
+        expect(info.hasPrevPage).toBe(false)
+        expect(info.hasNextPage).toBe(true)
+    })
+
+    it('marks a page returning fewer rows than the limit as the last page', () => {
+        const info = describeServerPage(200, 100, 37, 37)
+
+        expect(info.pageNumber).toBe(3)
+        expect(info.startIndex).toBe(201)
+        expect(info.endIndex).toBe(237)
+        expect(info.hasPrevPage).toBe(true)
+        expect(info.hasNextPage).toBe(false)
+    })
+
+    it('keeps hasNextPage based on the originally fetched row count, not a locally mutated displayed count', () => {
+        const info = describeServerPage(0, 100, 100, 97)
+
+        expect(info.hasNextPage).toBe(true)
+        expect(info.endIndex).toBe(97)
+    })
+
+    it('reports zero-based start/end as 0 when nothing is displayed', () => {
+        const info = describeServerPage(100, 100, 0, 0)
+
+        expect(info.startIndex).toBe(0)
+        expect(info.endIndex).toBe(0)
+    })
+
+    it('never allows a previous page from offset 0', () => {
+        const info = describeServerPage(0, 100, 50, 50)
+
+        expect(info.hasPrevPage).toBe(false)
+    })
+})

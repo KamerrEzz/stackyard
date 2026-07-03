@@ -9,7 +9,7 @@ import {
     isPkLessError,
     isTableEditable,
 } from './gridEditHelpers'
-import {RESULTS_PAGE_SIZE, describeCell, paginateRows} from './resultsGridHelpers'
+import {RESULTS_PAGE_SIZE, describeCell, describeServerPage, paginateRows} from './resultsGridHelpers'
 
 /**
  * Identifies exactly which table/schema/session a `ResultsGrid` instance's
@@ -30,6 +30,24 @@ export interface EditableGridContext {
 interface ResultsGridProps {
     result: dbengine.QueryResult
     editable?: EditableGridContext
+    /**
+     * When provided alongside `editable`, Prev/Next re-fetch a new page from
+     * the backend at the given offset/limit instead of slicing the
+     * already-fetched `result.Rows` client-side — the correct behavior for a
+     * `BrowseTableRows` result, which is only ever one page of a
+     * potentially much larger table (see `resultsGridHelpers.describeServerPage`
+     * for how "more rows may exist" is determined without a total row
+     * count). `pageOffset`/`pageLimit` must be supplied together with this
+     * callback; `pageLoading` optionally disables Prev/Next while a page
+     * request is in flight. Omitting all of these keeps the pre-existing
+     * client-side pagination behavior (`paginateRows`) — the correct
+     * behavior for an ad-hoc `RunQuery` result, which is always fetched in
+     * full up front.
+     */
+    onRequestPage?: (offset: number, limit: number) => void
+    pageOffset?: number
+    pageLimit?: number
+    pageLoading?: boolean
 }
 
 interface PendingRow {
@@ -53,16 +71,31 @@ function cellErrorKey(rowIndex: number, colIndex: number): string {
 
 /**
  * Grid for one `Engine.Query`/`BrowseTableRows` result: column headers with
- * type metadata, NULL-aware cell rendering, and client-side pagination over
- * the already-fully-fetched `result.Rows` (see resultsGridHelpers.ts for the
- * pagination scope note). When `editable` is supplied, adds in-place cell
- * editing, row insert, and row delete (tasks.md 4.1-4.4) bound to that exact
- * table/schema/session; a table with no primary key column renders a
- * visible read-only banner instead of silently disabling interaction.
+ * type metadata, NULL-aware cell rendering, and pagination over `result.Rows`.
+ * When `editable` is supplied, adds in-place cell editing, row insert, and
+ * row delete (tasks.md 4.1-4.4) bound to that exact table/schema/session; a
+ * table with no primary key column renders a visible read-only banner
+ * instead of silently disabling interaction.
+ *
+ * Pagination has two distinct modes, chosen per instance, never mixed:
+ *   - Client-side (default): `result.Rows` is assumed to already be the full
+ *     result set, and Prev/Next slice it locally via `paginateRows`. This is
+ *     what an ad-hoc `RunQuery` result always uses.
+ *   - Server-side (`onRequestPage` supplied alongside `editable`): `result`
+ *     is treated as exactly one page from `BrowseTableRows`, and Prev/Next
+ *     call `onRequestPage` to re-fetch a new page at a different offset from
+ *     the backend, rather than slicing anything client-side. This is what a
+ *     table "Browse" always uses, since `BrowseTableRows` returns only one
+ *     page at a time and rows beyond a client-side-only page would otherwise
+ *     be permanently unreachable for a table larger than that page. See
+ *     `resultsGridHelpers.describeServerPage` for how "a next page may
+ *     exist" is determined without the backend ever reporting a total row
+ *     count.
  */
-function ResultsGrid({result, editable}: ResultsGridProps) {
+function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pageLoading}: ResultsGridProps) {
     const [page, setPage] = useState(1)
     const [rows, setRows] = useState<unknown[][]>(result.Rows ?? [])
+    const [fetchedRowCount, setFetchedRowCount] = useState(result.Rows?.length ?? 0)
     const [editingCell, setEditingCell] = useState<{rowIndex: number; colIndex: number} | null>(null)
     const [editingValue, setEditingValue] = useState('')
     const [cellErrors, setCellErrors] = useState<Map<string, string>>(new Map())
@@ -76,6 +109,7 @@ function ResultsGrid({result, editable}: ResultsGridProps) {
     useEffect(() => {
         setPage(1)
         setRows(result.Rows ?? [])
+        setFetchedRowCount(result.Rows?.length ?? 0)
         setEditingCell(null)
         setEditingValue('')
         setCellErrors(new Map())
@@ -91,12 +125,16 @@ function ResultsGrid({result, editable}: ResultsGridProps) {
     const editableColumns = editable?.columns ?? []
     const tableIsEditable = editable !== undefined && isTableEditable(editableColumns) && !forcedReadOnly
 
-    const {pageRows, totalRows, currentPage, pageCount, startIndex, endIndex} = paginateRows(
-        rows,
-        page,
-        RESULTS_PAGE_SIZE,
-    )
-    const pageStartOffset = (currentPage - 1) * RESULTS_PAGE_SIZE
+    const usingServerPagination = editable !== undefined && onRequestPage !== undefined
+    const effectivePageLimit = pageLimit ?? RESULTS_PAGE_SIZE
+    const effectivePageOffset = pageOffset ?? 0
+
+    const clientPage = paginateRows(rows, page, RESULTS_PAGE_SIZE)
+    const serverPage = describeServerPage(effectivePageOffset, effectivePageLimit, fetchedRowCount, rows.length)
+
+    const pageRows = usingServerPagination ? rows : clientPage.pageRows
+    const totalRows = usingServerPagination ? rows.length : clientPage.totalRows
+    const pageStartOffset = usingServerPagination ? 0 : (clientPage.currentPage - 1) * RESULTS_PAGE_SIZE
 
     function markForcedReadOnlyIfPkLess(message: string) {
         if (isPkLessError(message)) {
@@ -458,27 +496,54 @@ function ResultsGrid({result, editable}: ResultsGridProps) {
                 )}
             </div>
 
-            {totalRows > 0 && (
+            {totalRows > 0 && usingServerPagination && (
                 <div className="flex items-center justify-between text-xs text-ink-400">
                     <span>
-                        Showing {startIndex}-{endIndex} of {totalRows} rows
+                        Showing {serverPage.startIndex}-{serverPage.endIndex} rows
+                    </span>
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => onRequestPage?.(Math.max(0, effectivePageOffset - effectivePageLimit), effectivePageLimit)}
+                            disabled={!serverPage.hasPrevPage || pageLoading === true}
+                            className="rounded border border-ink-700 px-2 py-1 text-ink-300 transition-colors hover:border-brass-500 hover:text-brass-500 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            Prev
+                        </button>
+                        <span className="text-ink-500">Page {serverPage.pageNumber}</span>
+                        <button
+                            type="button"
+                            onClick={() => onRequestPage?.(effectivePageOffset + effectivePageLimit, effectivePageLimit)}
+                            disabled={!serverPage.hasNextPage || pageLoading === true}
+                            className="rounded border border-ink-700 px-2 py-1 text-ink-300 transition-colors hover:border-brass-500 hover:text-brass-500 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            Next
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {totalRows > 0 && !usingServerPagination && (
+                <div className="flex items-center justify-between text-xs text-ink-400">
+                    <span>
+                        Showing {clientPage.startIndex}-{clientPage.endIndex} of {clientPage.totalRows} rows
                     </span>
                     <div className="flex items-center gap-2">
                         <button
                             type="button"
                             onClick={() => setPage((current) => Math.max(1, current - 1))}
-                            disabled={currentPage <= 1}
+                            disabled={clientPage.currentPage <= 1}
                             className="rounded border border-ink-700 px-2 py-1 text-ink-300 transition-colors hover:border-brass-500 hover:text-brass-500 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                             Prev
                         </button>
                         <span className="text-ink-500">
-                            Page {currentPage} of {pageCount}
+                            Page {clientPage.currentPage} of {clientPage.pageCount}
                         </span>
                         <button
                             type="button"
-                            onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
-                            disabled={currentPage >= pageCount}
+                            onClick={() => setPage((current) => Math.min(clientPage.pageCount, current + 1))}
+                            disabled={clientPage.currentPage >= clientPage.pageCount}
                             className="rounded border border-ink-700 px-2 py-1 text-ink-300 transition-colors hover:border-brass-500 hover:text-brass-500 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                             Next

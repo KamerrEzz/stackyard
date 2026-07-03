@@ -9,9 +9,11 @@ import {
     ListSchemasForSession,
     ListTablesForSession,
     OpenConnection,
-    RunQuery,
+    RunMultiStatementQuery,
 } from '../../../wailsjs/go/main/App'
 import type {dbengine, main} from '../../../wailsjs/go/models'
+import {collapseStatementResults, summarizeStatementResults} from './multiStatementHelpers'
+import {RESULTS_PAGE_SIZE} from './resultsGridHelpers'
 import ResultsGrid, {type EditableGridContext} from './ResultsGrid'
 import {registerModelSchemaProvider, unregisterModelSchemaProvider} from './schemaCompletion'
 import {ensureSqlCompletionProviderRegistered} from './schemaCompletionProvider'
@@ -41,7 +43,18 @@ interface SchemaEntry {
 }
 
 const DEFAULT_QUERY = '-- Write a query and click "Run query"\nSELECT 1;'
-const BROWSE_ROW_LIMIT = 1000
+
+/**
+ * Row count fetched per `BrowseTableRows` page (tasks.md 4.1, spec.md §4.3).
+ * Matches `ResultsGrid`'s own client-side page size so both pagination modes
+ * (see ResultsGrid.tsx's doc comment) present the same number of rows per
+ * page. Every Prev/Next click re-fetches a fresh page at a new offset from
+ * the backend (see handleRequestBrowsePage) rather than ever fetching more
+ * than one page's worth of rows up front — a table with more rows than a
+ * single page stays fully reachable this way, unlike a one-shot fetch with a
+ * fixed row cap.
+ */
+const BROWSE_PAGE_SIZE = RESULTS_PAGE_SIZE
 
 ensureSqlCompletionProviderRegistered()
 
@@ -60,6 +73,7 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
     const [runState, setRunState] = useState<RunState>('idle')
     const [errorMessage, setErrorMessage] = useState<string | null>(null)
     const [result, setResult] = useState<dbengine.QueryResult | null>(null)
+    const [multiStatementResults, setMultiStatementResults] = useState<dbengine.StatementResult[] | null>(null)
 
     const [schemaState, setSchemaState] = useState<SchemaState>('idle')
     const [schemaError, setSchemaError] = useState<string | null>(null)
@@ -67,12 +81,14 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
 
     const [browseResult, setBrowseResult] = useState<dbengine.QueryResult | null>(null)
     const [browseContext, setBrowseContext] = useState<EditableGridContext | null>(null)
+    const [browseOffset, setBrowseOffset] = useState(0)
     const [browseError, setBrowseError] = useState<string | null>(null)
     const [browsing, setBrowsing] = useState(false)
 
     const sessionIdRef = useRef<string | null>(null)
     const schemaTablesRef = useRef<dbengine.TableInfo[]>([])
     const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+    const browseTableRef = useRef<{schema: string; table: string} | null>(null)
 
     /**
      * The text this tab is considered "clean" against (tasks.md 4.7's
@@ -160,19 +176,46 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
         }
     }, [])
 
+    /**
+     * Runs `query` through `RunMultiStatementQuery` (spec.md §4.6), which
+     * treats every semicolon-separated statement as an independent execution
+     * and returns one `dbengine.StatementResult` per statement. A script
+     * with exactly one statement collapses back to the pre-existing
+     * single-result view via `collapseStatementResults`, so the common case
+     * — one statement, success or failure — renders exactly like it did
+     * before multi-statement support existed; a script with 2+ statements
+     * renders as the per-statement list instead (see the render below).
+     */
     const handleRunQuery = useCallback(async () => {
         setErrorMessage(null)
         setRunState(sessionIdRef.current ? 'running' : 'connecting')
         try {
             const sessionId = await ensureSession()
             setRunState('running')
-            const queryResult = await RunQuery(sessionId, query)
+            const statementResults = await RunMultiStatementQuery(sessionId, query)
             setBrowseResult(null)
             setBrowseContext(null)
-            setResult(queryResult)
-            setRunState('success')
+
+            const view = collapseStatementResults(statementResults)
+            if (view.mode === 'single-success') {
+                setResult(view.result ?? null)
+                setMultiStatementResults(null)
+                setErrorMessage(null)
+                setRunState('success')
+            } else if (view.mode === 'single-failure') {
+                setResult(null)
+                setMultiStatementResults(null)
+                setErrorMessage(view.errorMessage)
+                setRunState('error')
+            } else {
+                setResult(null)
+                setMultiStatementResults(view.results)
+                setErrorMessage(null)
+                setRunState('success')
+            }
         } catch (err) {
             setResult(null)
+            setMultiStatementResults(null)
             setErrorMessage(String(err))
             setRunState('error')
         }
@@ -193,9 +236,12 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
             setBrowsing(true)
             try {
                 const sessionId = await ensureSession()
-                const queryResult = await BrowseTableRows(sessionId, schema, table.Name, BROWSE_ROW_LIMIT, 0)
+                const queryResult = await BrowseTableRows(sessionId, schema, table.Name, BROWSE_PAGE_SIZE, 0)
                 setResult(null)
+                setMultiStatementResults(null)
                 setRunState('idle')
+                browseTableRef.current = {schema, table: table.Name}
+                setBrowseOffset(0)
                 setBrowseResult(queryResult)
                 setBrowseContext({sessionID: sessionId, schema, table: table.Name, columns: table.Columns})
             } catch (err) {
@@ -206,6 +252,35 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
         },
         [ensureSession],
     )
+
+    /**
+     * `ResultsGrid`'s `onRequestPage` callback for the current table browse
+     * (see ResultsGrid.tsx's server-pagination mode): re-calls
+     * `BrowseTableRows` at the requested offset/limit against the same
+     * session/schema/table the grid is already bound to, rather than
+     * slicing the already-fetched page client-side — a browsed table can
+     * have far more rows than any single page holds, and this is what keeps
+     * every row reachable via Prev/Next instead of only the first page ever
+     * fetched.
+     */
+    const handleRequestBrowsePage = useCallback(async (offset: number, limit: number) => {
+        const sessionId = sessionIdRef.current
+        const target = browseTableRef.current
+        if (!sessionId || !target) {
+            return
+        }
+        setBrowseError(null)
+        setBrowsing(true)
+        try {
+            const queryResult = await BrowseTableRows(sessionId, target.schema, target.table, limit, offset)
+            setBrowseResult(queryResult)
+            setBrowseOffset(offset)
+        } catch (err) {
+            setBrowseError(String(err))
+        } finally {
+            setBrowsing(false)
+        }
+    }, [])
 
     const handleCancelQuery = useCallback(async () => {
         const sessionId = sessionIdRef.current
@@ -315,16 +390,72 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
                         in {(result.Duration / 1_000_000).toFixed(1)}ms
                     </span>
                 )}
+                {runState === 'success' && multiStatementResults && (
+                    <span className="text-sm text-emerald-400">{summarizeStatementResults(multiStatementResults)}</span>
+                )}
                 {runState === 'error' && errorMessage && <span className="text-sm text-red-400">{errorMessage}</span>}
             </div>
 
             {browseResult && browseContext ? (
-                <ResultsGrid result={browseResult} editable={browseContext} />
+                <ResultsGrid
+                    result={browseResult}
+                    editable={browseContext}
+                    onRequestPage={handleRequestBrowsePage}
+                    pageOffset={browseOffset}
+                    pageLimit={BROWSE_PAGE_SIZE}
+                    pageLoading={browsing}
+                />
+            ) : multiStatementResults ? (
+                <div className="flex flex-col gap-2">
+                    {multiStatementResults.map((statementResult, index) => (
+                        <StatementResultItem key={index} result={statementResult} />
+                    ))}
+                </div>
             ) : (
                 result && <ResultsGrid result={result} />
             )}
         </div>
     )
 })
+
+/**
+ * One entry in the multi-statement results list (spec.md §4.6), shown only
+ * when a Run produced 2+ statements (see `collapseStatementResults`).
+ * Collapsed by default when the statement succeeded, expanded by default
+ * when it failed, so a failing statement's error message is immediately
+ * visible without an extra click.
+ */
+function StatementResultItem({result}: {result: dbengine.StatementResult}) {
+    return (
+        <details
+            open={!result.Success}
+            className="rounded border border-ink-800 bg-ink-950/40 p-2"
+        >
+            <summary className="flex cursor-pointer items-center gap-2 text-xs text-ink-300">
+                <span
+                    className={
+                        result.Success
+                            ? 'rounded border border-emerald-700 px-1.5 py-0.5 text-emerald-400'
+                            : 'rounded border border-red-700 px-1.5 py-0.5 text-red-400'
+                    }
+                >
+                    {result.Success ? 'OK' : 'Failed'}
+                </span>
+                <span className="truncate font-mono">{result.Statement}</span>
+            </summary>
+            <div className="mt-2">
+                {result.Success ? (
+                    result.Result ? (
+                        <ResultsGrid result={result.Result} />
+                    ) : (
+                        <p className="text-xs text-ink-500">Statement succeeded with no rows returned.</p>
+                    )
+                ) : (
+                    <p className="text-xs text-red-400">{result.ErrorMessage}</p>
+                )}
+            </div>
+        </details>
+    )
+}
 
 export default QueryEditor

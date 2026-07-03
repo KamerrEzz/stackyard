@@ -96,7 +96,7 @@ regardless of whether a task fully closes.
       tab" action.
 - [x] **4.6** Snippets CRUD (name, tags, connection-scoped or global);
       snippet search by name/tag.
-- [ ] **4.7** "Run snippet" loads it into the current tab, or a new tab if
+- [x] **4.7** "Run snippet" loads it into the current tab, or a new tab if
       the current one is dirty.
 - [x] **4.8** Autocomplete: table/column suggestions in Monaco sourced
       from `ListSchemas`/`ListTables`.
