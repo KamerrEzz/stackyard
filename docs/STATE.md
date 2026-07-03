@@ -2612,8 +2612,123 @@ pnpm run test
 pnpm run build
 ```
 
-**Next steps:** Phase 7 — Import/Export (tasks 7.1-7.4): CSV export for
-a full table and a query result set (type-preserving), JSON export
-(same two scopes), SQL dump export for Postgres/MySQL (round-trip
-tested against a fresh instance), and CSV/JSON import with pre-commit
-validation against target table columns.
+---
+
+## Session 12 — Phase 7: Import/Export (7.1-7.4)
+
+Export (7.1-7.3) and import (7.4) ran in parallel — genuinely disjoint
+directions (export reads FROM the DB, import writes TO it), coordinated
+only on the CSV null-vs-empty-string convention both needed to agree
+on for round-trip fidelity. They independently converged on the
+identical convention (confirmed by the import task cross-checking the
+export task's `internal/export/csv.go` directly) — no reconciliation
+needed.
+
+### The CSV null convention (binding for any future CSV work)
+
+A SQL `NULL` renders as a completely empty, **unquoted** CSV field; an
+empty string renders as a **quoted empty pair `""`**. This is exactly
+Postgres's own `COPY ... CSV` convention, not invented ad hoc — chosen
+specifically because it's unambiguous to reverse on import. JSON needs
+no such convention: `null` vs `""` are already distinguishable via
+JSON's own grammar.
+
+### Export architecture (`internal/export/`)
+
+Two entry points converge on one engine-agnostic formatting layer
+(`ToCSV`/`ToJSON`/`ToSQLDump`, needing only `(columnNames []string, rows
+[][]any)` — no DB dependency):
+- **Full table**: pages through `Engine.Exec` directly at 1000
+  rows/page — deliberately NOT `BrowseTableRows`, to avoid spamming
+  `query_history` with one entry per internal page.
+- **Current query result**: takes data the frontend already holds from
+  `RunQuery`/`RunMultiStatementQuery` — Go keeps no last-result cache,
+  the frontend is the single source of truth, avoiding a second
+  cache that could drift from what's actually on screen.
+
+**SQL dump is scoped to full-table export only** (a deliberate
+narrowing) — an arbitrary query result can join multiple tables (no
+single `CREATE TABLE` target) and only carries bare driver type names
+with no length/precision, which would risk violating spec.md's literal
+"importable into a fresh instance" requirement.
+
+**Per-engine type mapping for `CREATE TABLE`**: Postgres's
+`information_schema.columns.data_type` is always valid standalone DDL
+as-is (unbounded/arbitrary-precision) — reused directly from the
+existing `ListTables`/`ColumnInfo`. MySQL's bare `DataType` (`varchar`)
+isn't valid DDL without a length, so a small additional raw query
+against `information_schema.columns.COLUMN_TYPE` (`varchar(255)`) was
+added in `export.go` via the existing `Engine.Exec` path — no change to
+`dbengine.Engine`'s shared interface.
+
+**Per-engine SQL escaping**: single quotes doubled for both;
+**backslashes additionally escaped for MySQL only** — its default
+`sql_mode` treats `\` as an escape character inside a string literal,
+so skipping this would let a trailing backslash swallow the closing
+quote, a real SQL-injection-shaped bug in the dump's own output.
+Postgres's `standard_conforming_strings` default needs no such
+escaping. INSERTs batched at 500 rows/statement.
+
+**Round-trip tested for real** (not just "produces valid-looking SQL"):
+generated a dump from a live seeded table, spun up a genuinely separate
+FRESH container of the same engine (test IDs 999023-999026), executed
+the dump against it, and compared the resulting rows to the source via
+exact string equality — including an explicit NULL-vs-`''` fidelity
+check. Both Postgres and MySQL passed. Confirmed zero Docker leftovers
+after.
+
+**File save**: first use of `runtime.SaveFileDialog` in this codebase.
+Each bound method opens the dialog and writes the file itself,
+returning `(string path, error)` — respects the hard 1-2-output Wails
+constraint (Session 10's finding) rather than trying to return the
+exported blob AND a path AND an error.
+
+### Import architecture (`internal/importdata/`)
+
+- **Hard block on mismatch, no soft-confirm** — `ImportFile` fully
+  re-validates from scratch immediately before writing, regardless of
+  any prior `ValidateImportFile` call, so there is no window where a
+  stale validation result could be trusted.
+- **Bulk single-statement INSERT, not N× `InsertTableRow`** — one round
+  trip, atomic on both Postgres and MySQL/InnoDB. This is what makes
+  "abort-before-write" airtight even against DB-level constraints
+  (UNIQUE/CHECK) the validator itself has no visibility into — a
+  partial per-row-insert loop could still leave some rows committed if
+  a later row failed a DB constraint the validator didn't catch.
+- **Custom CSV tokenizer, not stdlib `encoding/csv`** — the standard
+  library discards quoting information entirely, which is exactly the
+  bit needed to distinguish an unquoted-empty NULL from a quoted-empty
+  `""` string on the way back in.
+- **Type-plausibility validation, not full type inference**: exact-match
+  categorization of `ColumnInfo.DataType` against Postgres/MySQL's
+  `information_schema` vocabulary into integer/numeric/boolean/datetime/
+  text buckets; unknown types always pass rather than being rejected.
+  Known gap: MySQL reports `BOOLEAN` as `tinyint`, indistinguishable
+  from a genuine tinyint column — only `0`/`1` passes there, not
+  `"true"`/`"false"`.
+- All mismatches across the whole file are collected before returning,
+  not just the first one — so the user sees everything wrong in one
+  pass rather than fixing errors one round-trip at a time.
+- **Verified for real, not just unit-tested**: an integration test
+  seeded a file with one deliberately bad row among several good ones
+  and confirmed via `SELECT COUNT(*)` that ZERO rows landed — not
+  "all but the bad one." A separate genuinely-valid file was confirmed
+  to round-trip NULL/empty-string exactly.
+- MySQL doesn't have its own live import integration test (Postgres
+  only) — MySQL's bulk-insert SQL dialect is covered by unit tests
+  instead; a gap worth closing if MySQL import ever proves flaky in
+  practice.
+- Post-session cleanup: wired the previously-dead `isImportableFilePath`
+  helper into `ImportDialog.tsx`'s file-pick handler as a defensive
+  client-side extension check (the OS file dialog already filters by
+  extension, but a user can often override that filter to "All files")
+  — was written and tested but never called; now actually gates the
+  UI instead of being inert.
+
+### Phase 7 is now fully implemented and verified
+
+All of `go build/vet/gofmt/test ./...`, `go test -tags=integration
+./...` (including both round-trip tests), `pnpm run build`, `pnpm run
+test` (192/192 Vitest) green. Zero Docker leftovers confirmed after
+every integration test's own self-cleanup. Next: Phase 8 (Migrations —
+Postgres + MySQL), tasks 8.1+.

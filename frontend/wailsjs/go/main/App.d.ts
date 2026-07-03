@@ -52,6 +52,16 @@ export function DeleteTableRows(arg1:string,arg2:string,arg3:string,arg4:Array<R
 
 export function DuplicateProfile(arg1:number):Promise<main.ProfileSummary>;
 
+export function ExportQueryResultAsCSV(arg1:Array<string>,arg2:Array<any>):Promise<string>;
+
+export function ExportQueryResultAsJSON(arg1:Array<string>,arg2:Array<any>):Promise<string>;
+
+export function ExportTableAsCSV(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function ExportTableAsJSON(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function ExportTableAsSQLDump(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function FindMongoDocuments(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number):Promise<Array<Record<string, any>>>;
 
 export function GetConnectionString(arg1:number):Promise<string>;
@@ -71,6 +81,8 @@ export function GetRedisSortedSet(arg1:string,arg2:string,arg3:number,arg4:numbe
 export function GetRedisString(arg1:string,arg2:string):Promise<string>;
 
 export function GetRedisTTL(arg1:string,arg2:string):Promise<time.Duration>;
+
+export function ImportFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ImportCommitResult>;
 
 export function InsertMongoDocument(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
@@ -103,6 +115,8 @@ export function OpenRedisConnection(arg1:main.ConnectionFormFields):Promise<stri
 export function ParseConnectionURL(arg1:string):Promise<main.ConnectionFormFields>;
 
 export function PersistRedisKey(arg1:string,arg2:string):Promise<void>;
+
+export function PickImportFile():Promise<string>;
 
 export function Ping():Promise<string>;
 
@@ -155,3 +169,5 @@ export function UpdateMongoDocument(arg1:string,arg2:string,arg3:string,arg4:str
 export function UpdateSnippet(arg1:number,arg2:string,arg3:storage.Engine,arg4:string,arg5:Array<string>,arg6:any):Promise<storage.Snippet>;
 
 export function UpdateTableRow(arg1:string,arg2:string,arg3:string,arg4:Record<string, any>,arg5:string,arg6:any):Promise<void>;
+
+export function ValidateImportFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ImportValidationResult>;

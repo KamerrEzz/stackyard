@@ -6,12 +6,20 @@ import {
     BrowseTableRows,
     CancelQuery,
     CloseConnectionSession,
+    ExportQueryResultAsCSV,
+    ExportQueryResultAsJSON,
+    ExportTableAsCSV,
+    ExportTableAsJSON,
+    ExportTableAsSQLDump,
     ListSchemasForSession,
     ListTablesForSession,
     OpenConnection,
     RunMultiStatementQuery,
 } from '../../../wailsjs/go/main/App'
 import type {dbengine, main} from '../../../wailsjs/go/models'
+import ExportControls from './ExportControls'
+import {buildQueryResultExportPayload, describeExportScope, type ExportFormat} from './exportHelpers'
+import ImportDialog from './ImportDialog'
 import {collapseStatementResults, summarizeStatementResults} from './multiStatementHelpers'
 import {RESULTS_PAGE_SIZE} from './resultsGridHelpers'
 import ResultsGrid, {type EditableGridContext} from './ResultsGrid'
@@ -84,6 +92,8 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
     const [browseOffset, setBrowseOffset] = useState(0)
     const [browseError, setBrowseError] = useState<string | null>(null)
     const [browsing, setBrowsing] = useState(false)
+
+    const [importTarget, setImportTarget] = useState<{sessionId: string; schema: string; table: dbengine.TableInfo} | null>(null)
 
     const sessionIdRef = useRef<string | null>(null)
     const schemaTablesRef = useRef<dbengine.TableInfo[]>([])
@@ -282,6 +292,78 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
         }
     }, [])
 
+    /**
+     * "Import" (tasks.md 7.4's file-picker + target-table-selector entry
+     * point, wired from the same Tables list Browse/Export already use):
+     * ensures a live session exists (same lazy-connect contract every other
+     * per-table action here follows) then opens ImportDialog bound to that
+     * exact schema/table. The dialog owns the rest of the flow — pick file,
+     * validate, confirm — this handler's only job is picking the target.
+     */
+    const handleOpenImport = useCallback(
+        async (schema: string, table: dbengine.TableInfo) => {
+            try {
+                const sessionId = await ensureSession()
+                setImportTarget({sessionId, schema, table})
+            } catch (err) {
+                setSchemaError(String(err))
+            }
+        },
+        [ensureSession],
+    )
+
+    /**
+     * After a successful import, refreshes the currently browsed grid only
+     * when it is browsing the exact table just imported into — otherwise an
+     * import into some other table would pointlessly re-fetch whatever
+     * unrelated browse/query result happens to be on screen.
+     */
+    const handleImported = useCallback(() => {
+        const target = browseTableRef.current
+        if (importTarget && target && target.schema === importTarget.schema && target.table === importTarget.table.Name) {
+            void handleRequestBrowsePage(0, BROWSE_PAGE_SIZE)
+        }
+    }, [handleRequestBrowsePage, importTarget])
+
+    /**
+     * "Export table" (tasks.md 7.1-7.3's full-table scope): dispatches to
+     * whichever ExportTableAs* bound method matches format, targeting the
+     * table/schema the grid is currently browsing — see
+     * export.go/ExportTableAsCSV's own doc comment for why the full row set
+     * is fetched fresh on the Go side rather than reusing browseResult's
+     * single already-fetched page.
+     */
+    const handleExportTable = useCallback(
+        async (format: ExportFormat): Promise<string> => {
+            if (!browseContext) {
+                return ''
+            }
+            const {sessionID, schema, table} = browseContext
+            if (format === 'json') {
+                return ExportTableAsJSON(sessionID, schema, table)
+            }
+            if (format === 'sql') {
+                return ExportTableAsSQLDump(sessionID, schema, table)
+            }
+            return ExportTableAsCSV(sessionID, schema, table)
+        },
+        [browseContext],
+    )
+
+    /**
+     * "Export result" (tasks.md 7.1-7.2's current-query-result scope):
+     * dispatches to ExportQueryResultAsCSV/JSON using data this tab already
+     * fetched (see exportHelpers.buildQueryResultExportPayload) — never
+     * re-runs the query or asks the Go side for a cached last result.
+     */
+    const handleExportResult = useCallback(async (queryResult: dbengine.QueryResult, format: ExportFormat): Promise<string> => {
+        const {columnNames, rows} = buildQueryResultExportPayload(queryResult)
+        if (format === 'json') {
+            return ExportQueryResultAsJSON(columnNames, rows)
+        }
+        return ExportQueryResultAsCSV(columnNames, rows)
+    }, [])
+
     const handleCancelQuery = useCallback(async () => {
         const sessionId = sessionIdRef.current
         if (!sessionId) {
@@ -331,14 +413,23 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
                                     <span className="font-mono">
                                         {entry.schema}.{table.Name}
                                     </span>
-                                    <button
-                                        type="button"
-                                        onClick={() => void handleBrowseTable(entry.schema, table)}
-                                        disabled={browsing}
-                                        className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
-                                    >
-                                        Browse
-                                    </button>
+                                    <div className="flex items-center gap-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleBrowseTable(entry.schema, table)}
+                                            disabled={browsing}
+                                            className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            Browse
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleOpenImport(entry.schema, table)}
+                                            className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400"
+                                        >
+                                            Import
+                                        </button>
+                                    </div>
                                 </div>
                             )),
                         )}
@@ -397,22 +488,43 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
             </div>
 
             {browseResult && browseContext ? (
-                <ResultsGrid
-                    result={browseResult}
-                    editable={browseContext}
-                    onRequestPage={handleRequestBrowsePage}
-                    pageOffset={browseOffset}
-                    pageLimit={BROWSE_PAGE_SIZE}
-                    pageLoading={browsing}
-                />
+                <div className="flex flex-col gap-2">
+                    <ExportControls formats={describeExportScope(true).availableFormats} onExport={handleExportTable} />
+                    <ResultsGrid
+                        result={browseResult}
+                        editable={browseContext}
+                        onRequestPage={handleRequestBrowsePage}
+                        pageOffset={browseOffset}
+                        pageLimit={BROWSE_PAGE_SIZE}
+                        pageLoading={browsing}
+                    />
+                </div>
             ) : multiStatementResults ? (
                 <div className="flex flex-col gap-2">
                     {multiStatementResults.map((statementResult, index) => (
-                        <StatementResultItem key={index} result={statementResult} />
+                        <StatementResultItem key={index} result={statementResult} onExportResult={handleExportResult} />
                     ))}
                 </div>
             ) : (
-                result && <ResultsGrid result={result} />
+                result && (
+                    <div className="flex flex-col gap-2">
+                        <ExportControls
+                            formats={describeExportScope(false).availableFormats}
+                            onExport={(format) => handleExportResult(result, format)}
+                        />
+                        <ResultsGrid result={result} />
+                    </div>
+                )
+            )}
+
+            {importTarget && (
+                <ImportDialog
+                    sessionID={importTarget.sessionId}
+                    schema={importTarget.schema}
+                    table={importTarget.table}
+                    onClose={() => setImportTarget(null)}
+                    onImported={handleImported}
+                />
             )}
         </div>
     )
@@ -425,7 +537,13 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
  * when it failed, so a failing statement's error message is immediately
  * visible without an extra click.
  */
-function StatementResultItem({result}: {result: dbengine.StatementResult}) {
+function StatementResultItem({
+    result,
+    onExportResult,
+}: {
+    result: dbengine.StatementResult
+    onExportResult: (queryResult: dbengine.QueryResult, format: ExportFormat) => Promise<string>
+}) {
     return (
         <details
             open={!result.Success}
@@ -443,10 +561,16 @@ function StatementResultItem({result}: {result: dbengine.StatementResult}) {
                 </span>
                 <span className="truncate font-mono">{result.Statement}</span>
             </summary>
-            <div className="mt-2">
+            <div className="mt-2 flex flex-col gap-2">
                 {result.Success ? (
                     result.Result ? (
-                        <ResultsGrid result={result.Result} />
+                        <>
+                            <ExportControls
+                                formats={describeExportScope(false).availableFormats}
+                                onExport={(format) => onExportResult(result.Result!, format)}
+                            />
+                            <ResultsGrid result={result.Result} />
+                        </>
                     ) : (
                         <p className="text-xs text-ink-500">Statement succeeded with no rows returned.</p>
                     )

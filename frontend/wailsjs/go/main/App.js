@@ -94,6 +94,26 @@ export function DuplicateProfile(arg1) {
   return window['go']['main']['App']['DuplicateProfile'](arg1);
 }
 
+export function ExportQueryResultAsCSV(arg1, arg2) {
+  return window['go']['main']['App']['ExportQueryResultAsCSV'](arg1, arg2);
+}
+
+export function ExportQueryResultAsJSON(arg1, arg2) {
+  return window['go']['main']['App']['ExportQueryResultAsJSON'](arg1, arg2);
+}
+
+export function ExportTableAsCSV(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExportTableAsCSV'](arg1, arg2, arg3);
+}
+
+export function ExportTableAsJSON(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExportTableAsJSON'](arg1, arg2, arg3);
+}
+
+export function ExportTableAsSQLDump(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExportTableAsSQLDump'](arg1, arg2, arg3);
+}
+
 export function FindMongoDocuments(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['FindMongoDocuments'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
@@ -132,6 +152,10 @@ export function GetRedisString(arg1, arg2) {
 
 export function GetRedisTTL(arg1, arg2) {
   return window['go']['main']['App']['GetRedisTTL'](arg1, arg2);
+}
+
+export function ImportFile(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ImportFile'](arg1, arg2, arg3, arg4);
 }
 
 export function InsertMongoDocument(arg1, arg2, arg3, arg4) {
@@ -196,6 +220,10 @@ export function ParseConnectionURL(arg1) {
 
 export function PersistRedisKey(arg1, arg2) {
   return window['go']['main']['App']['PersistRedisKey'](arg1, arg2);
+}
+
+export function PickImportFile() {
+  return window['go']['main']['App']['PickImportFile']();
 }
 
 export function Ping() {
@@ -300,4 +328,8 @@ export function UpdateSnippet(arg1, arg2, arg3, arg4, arg5, arg6) {
 
 export function UpdateTableRow(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['UpdateTableRow'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function ValidateImportFile(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ValidateImportFile'](arg1, arg2, arg3, arg4);
 }

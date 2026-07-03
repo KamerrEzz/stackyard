@@ -144,12 +144,12 @@ code surface with the editable-grid work above.
 
 ## Phase 7 — Import / Export
 
-- [ ] **7.1** CSV export for a full table and for a query result set,
+- [x] **7.1** CSV export for a full table and for a query result set,
       type-preserving (dates/numbers/nulls distinguishable).
-- [ ] **7.2** JSON export, same two scopes.
-- [ ] **7.3** SQL dump export (`CREATE TABLE` + `INSERT`) for Postgres and
+- [x] **7.2** JSON export, same two scopes.
+- [x] **7.3** SQL dump export (`CREATE TABLE` + `INSERT`) for Postgres and
       MySQL; round-trip-tested against a fresh instance.
-- [ ] **7.4** Import: CSV/JSON with pre-commit validation against target
+- [x] **7.4** Import: CSV/JSON with pre-commit validation against target
       table columns; abort-before-write on mismatch.
 
 ## Phase 8 — Migrations (Postgres + MySQL)
