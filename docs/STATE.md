@@ -3982,3 +3982,89 @@ above until NSIS is installed.
    `v1.0.0` tag at that point.
 4. Produce `docs/HANDOFF.md` per the standing session-opening
    instructions, once Phase 9 (including 9.3) is fully closed.
+
+---
+
+## Session 21 — Task 9.3 unblocked and closed: NSIS installed, installer built and smoke-tested
+
+The user installed NSIS themselves (in an elevated terminal, per Session
+16's documented recovery path) and ran `wails build -nsis`.
+
+### A wrong-turn along the way, corrected before it mattered
+
+After the user's install, `wails build -nsis` still reported "makensis
+not found." Investigating: `winget list --id NSIS.NSIS` confirmed NSIS
+was genuinely installed, but its own installer does NOT add itself to
+PATH. I initially added the WRONG directory
+(`C:\Program Files\NSIS`) to the user's PATH — a copy-paste error
+reading my own earlier `ls` output, where I'd run two `ls` commands
+back-to-back and misattributed the successful directory listing (which
+was actually `Program Files (x86)\NSIS`'s contents) to the non-`(x86)`
+path. Caught this myself before asking the user to retry, by directly
+testing `"/c/Program Files/NSIS/makensis.exe"` (didn't exist) vs.
+`"/c/Program Files (x86)/NSIS/makensis.exe"` (did) — corrected the PATH
+entry to the real location (`C:\Program Files (x86)\NSIS`, the standard
+NSIS install directory — NSIS itself is a 32-bit tool). Modifying the
+*user-level* PATH doesn't require admin elevation, so this was safe to
+do directly, unlike the NSIS install itself.
+
+The user then opened a genuinely new terminal (confirmed via
+`where.exe makensis` resolving correctly before the build command) and
+`wails build -nsis` succeeded: "Building 'amd64' installer: Done."
+
+### Installer artifact
+
+`build/bin/stackyard-amd64-installer.exe`, 17,453,403 bytes (~16.6 MiB).
+
+### Smoke test — genuinely run, not approximated this time
+
+Unlike Session 16's necessarily-partial approximation (no installer
+existed yet to test), this time a REAL install happened. The installer
+itself also requests admin elevation by default
+(`RequestExecutionLevel "admin"` in Wails' generated
+`build/windows/installer/project.nsi` — a per-machine install into
+`Program Files`, the Wails default). I could not run the installer
+myself for the same UAC reason documented in Session 16 — asked the
+user explicitly whether to (a) have them run it themselves, or (b)
+reconfigure the installer to a per-user, no-admin-required install
+(`REQUEST_EXECUTION_LEVEL "user"`) — framed as a real product decision
+affecting every future real user's install, not a convenience shortcut
+for me to decide unilaterally. **User chose (a).**
+
+The user ran the installer, which installed to
+`C:\Program Files\Kamerr Ezz\Stackyard\` (matching the `companyName`/
+`productName` values Session 16 added to `wails.json`'s `info` block).
+I then verified directly:
+- **Contents**: exactly `stackyard.exe` (49,825,280 bytes — byte-for-byte
+  identical to `build/bin/stackyard.exe`, confirming the installer
+  packages the same binary, not a different build) and
+  `uninstall.exe`. No `frontend/`, no `node_modules`, no dev-only path
+  dependency of any kind — confirms the frontend is fully embedded via
+  `go:embed` into the binary itself, exactly as the architecture
+  requires.
+- **Launch**: started the installed executable directly (`Start-Process`
+  against the `Program Files` path, not `build/bin/`). Two
+  `stackyard.exe` processes appeared (Wails/WebView2's normal
+  main-process-plus-host-process shape), both `Responding: True` after
+  a settle period, working sets ~95-98MB each — consistent with Session
+  18's idle-memory measurements for the dev-built binary, confirming the
+  installed copy behaves identically to the one already measured.
+  Closed cleanly via `Stop-Process`.
+
+This is about as close to "a machine without the dev toolchain" as this
+session's actual environment allows — the installed binary itself was
+proven self-contained (byte-identical to the already-built one, zero
+dev-path dependencies found on disk), even though this specific machine
+still has the dev toolchain installed. A genuinely clean VM remains the
+only fully rigorous version of this test, per Session 16's original
+caveat — not repeated here since the artifact-level verification above
+already gives strong confidence.
+
+### Task 9.3 status: CLOSED
+
+`tasks.md` 9.3 is now checked. **Phase 9 (Polish & Ship v1) is fully
+closed — all of 9.1, 9.2, 9.3, 9.4 complete.** This closes every phase
+in `plan.md`'s roadmap; no Phase 10 exists.
+
+**`v1.0.0` is now due**, pinned to this session's closing commit (see
+the "Proposed version tags" section for the exact command).

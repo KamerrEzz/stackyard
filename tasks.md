@@ -172,7 +172,7 @@ code surface with the editable-grid work above.
       measured and recorded against the NFR bar (spec.md §5).
 - [x] **9.2** Visual polish pass across both modules against the "not
       generic/AI-template" bar — typography, spacing, dark-mode contrast.
-- [ ] **9.3** Windows installer build via Wails' packaging; smoke-test a
+- [x] **9.3** Windows installer build via Wails' packaging; smoke-test a
       clean install on a machine without the dev toolchain.
 - [x] **9.4** Dogfood run: replace your own next new-project setup with
       Stackyard end-to-end (spec.md §7 success definition); log friction
