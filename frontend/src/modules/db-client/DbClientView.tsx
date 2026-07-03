@@ -9,6 +9,8 @@ import {
 } from '../../../wailsjs/go/main/App'
 import type {main, storage} from '../../../wailsjs/go/models'
 import QueryEditor from './QueryEditor'
+import QueryHistoryPanel from './QueryHistoryPanel'
+import SnippetsPanel from './SnippetsPanel'
 import TabBar from './TabBar'
 import {closeTab, openTab} from './tabState'
 
@@ -36,6 +38,7 @@ interface DbClientTab {
     id: string
     label: string
     fields: main.ConnectionFormFields
+    initialQuery?: string
 }
 
 function labelForFields(fields: main.ConnectionFormFields): string {
@@ -93,8 +96,8 @@ function DbClientView() {
     const [tabs, setTabs] = useState<DbClientTab[]>([])
     const [activeTabId, setActiveTabId] = useState<string | null>(null)
 
-    const addTab = useCallback((fields: main.ConnectionFormFields, label: string) => {
-        const tab: DbClientTab = {id: nextTabId(), label, fields}
+    const addTab = useCallback((fields: main.ConnectionFormFields, label: string, initialQuery?: string) => {
+        const tab: DbClientTab = {id: nextTabId(), label, fields, initialQuery}
         setTabs((prev) => openTab(prev, tab).tabs)
         setActiveTabId(tab.id)
     }, [])
@@ -167,6 +170,7 @@ function DbClientView() {
                     Password: password,
                     Database: database,
                     Params: rowsToParams(paramRows),
+                    SavedConnectionID: 0,
                 },
                 saveName.trim(),
             )
@@ -196,6 +200,23 @@ function DbClientView() {
         [addTab, applyParsedFields, refreshSavedConnections],
     )
 
+    const handleReplayEntry = useCallback(
+        async (entry: storage.QueryHistoryEntry) => {
+            try {
+                const fields = await ConnectUsingSavedConnection(entry.ConnectionID)
+                setParseError(null)
+                setPasteValue('')
+                applyParsedFields(fields)
+                const savedConn = savedConnections.find((conn) => conn.ID === entry.ConnectionID)
+                addTab(fields, savedConn ? savedConn.Name : labelForFields(fields), entry.QueryText)
+                await refreshSavedConnections()
+            } catch (err) {
+                setSavedConnectionsError(String(err))
+            }
+        },
+        [addTab, applyParsedFields, refreshSavedConnections, savedConnections],
+    )
+
     const handleDeleteConnection = useCallback(
         async (id: number, name: string) => {
             if (!window.confirm(`Delete saved connection "${name}"? This cannot be undone.`)) {
@@ -222,6 +243,7 @@ function DbClientView() {
             Password: password,
             Database: database,
             Params: rowsToParams(paramRows),
+            SavedConnectionID: 0,
         }
         try {
             await TestConnection(fields)
@@ -474,6 +496,10 @@ function DbClientView() {
                 ))}
             </div>
 
+            <SnippetsPanel savedConnections={savedConnections} />
+
+            <QueryHistoryPanel savedConnections={savedConnections} onReplay={(entry) => void handleReplayEntry(entry)} />
+
             {tabs.length > 0 && (
                 <div className="flex flex-col gap-3">
                     <TabBar
@@ -485,7 +511,7 @@ function DbClientView() {
                     />
                     {tabs.map((tab) => (
                         <div key={tab.id} className={tab.id === activeTabId ? '' : 'hidden'}>
-                            <QueryEditor fields={tab.fields} />
+                            <QueryEditor fields={tab.fields} initialQuery={tab.initialQuery} />
                         </div>
                     ))}
                     {activeTabId === null && (

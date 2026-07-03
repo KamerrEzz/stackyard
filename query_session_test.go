@@ -39,6 +39,10 @@ func (f *fakeQueryEngine) ListTables(ctx context.Context, schema string) ([]dben
 	return nil, nil
 }
 
+func (f *fakeQueryEngine) ListForeignKeys(ctx context.Context, schema string) ([]dbengine.ForeignKey, error) {
+	return nil, nil
+}
+
 func (f *fakeQueryEngine) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -44,6 +44,13 @@ func TestListTables_BeforeConnect_ReturnsErrNotConnected(t *testing.T) {
 	}
 }
 
+func TestListForeignKeys_BeforeConnect_ReturnsErrNotConnected(t *testing.T) {
+	e := New("user:pass@tcp(localhost:3306)/db")
+	if _, err := e.ListForeignKeys(context.Background(), "test"); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("ListForeignKeys() before Connect = %v, want ErrNotConnected", err)
+	}
+}
+
 func TestClose_BeforeConnect_IsSafe(t *testing.T) {
 	e := New("user:pass@tcp(localhost:3306)/db")
 	if err := e.Close(); err != nil {

@@ -4,6 +4,8 @@ import {main} from '../models';
 import {storage} from '../models';
 import {dbengine} from '../models';
 
+export function BuildSchemaDiagram(arg1:string,arg2:string):Promise<string>;
+
 export function CancelQuery(arg1:string):Promise<void>;
 
 export function CheckPortAvailable(arg1:number):Promise<boolean>;
@@ -16,9 +18,15 @@ export function ConnectUsingSavedConnection(arg1:number):Promise<main.Connection
 
 export function CreateProfile(arg1:string,arg2:Array<main.ServiceRequest>):Promise<main.ProfileSummary>;
 
+export function CreateSnippet(arg1:string,arg2:storage.Engine,arg3:string,arg4:Array<string>,arg5:any):Promise<storage.Snippet>;
+
 export function DeleteConnection(arg1:number):Promise<void>;
 
 export function DeleteProfile(arg1:number):Promise<void>;
+
+export function DeleteQueryHistoryEntry(arg1:number):Promise<void>;
+
+export function DeleteSnippet(arg1:number):Promise<void>;
 
 export function DuplicateProfile(arg1:number):Promise<main.ProfileSummary>;
 
@@ -28,7 +36,17 @@ export function GetProfileStatus(arg1:number):Promise<string>;
 
 export function ListConnections():Promise<Array<storage.Connection>>;
 
+export function ListForeignKeysForSession(arg1:string,arg2:string):Promise<Array<dbengine.ForeignKey>>;
+
 export function ListProfiles():Promise<Array<main.ProfileSummary>>;
+
+export function ListQueryHistory(arg1:storage.QueryHistoryFilter):Promise<Array<storage.QueryHistoryEntry>>;
+
+export function ListSchemasForSession(arg1:string):Promise<Array<string>>;
+
+export function ListSnippets(arg1:main.SnippetFilter):Promise<Array<storage.Snippet>>;
+
+export function ListTablesForSession(arg1:string,arg2:string):Promise<Array<dbengine.TableInfo>>;
 
 export function OpenConnection(arg1:main.ConnectionFormFields):Promise<string>;
 
@@ -57,3 +75,5 @@ export function StopStatusWatcher():Promise<void>;
 export function SuggestFreePort(arg1:number):Promise<number>;
 
 export function TestConnection(arg1:main.ConnectionFormFields):Promise<void>;
+
+export function UpdateSnippet(arg1:number,arg2:string,arg3:storage.Engine,arg4:string,arg5:Array<string>,arg6:any):Promise<storage.Snippet>;

@@ -231,6 +231,57 @@ func (e *Engine) ListTables(ctx context.Context, schema string) ([]dbengine.Tabl
 	return result, nil
 }
 
+const listForeignKeysQuery = `
+SELECT
+	tc.table_name,
+	kcu.column_name,
+	ccu.table_name AS referenced_table,
+	ccu.column_name AS referenced_column
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+	ON tc.constraint_name = kcu.constraint_name
+	AND tc.table_schema = kcu.table_schema
+JOIN information_schema.constraint_column_usage ccu
+	ON tc.constraint_name = ccu.constraint_name
+	AND tc.table_schema = ccu.table_schema
+WHERE tc.constraint_type = 'FOREIGN KEY'
+	AND tc.table_schema = $1
+ORDER BY tc.table_name, kcu.ordinal_position`
+
+// ListForeignKeys returns every foreign key constraint in schema, joining
+// information_schema.table_constraints/key_column_usage/
+// constraint_column_usage the way Postgres's own documentation recommends
+// for resolving a FOREIGN KEY constraint's referenced table/column — there
+// is no single information_schema view that already carries this
+// relationship. For a composite foreign key (more than one column),
+// constraint_column_usage does not guarantee row-for-row column
+// correspondence with key_column_usage; this is a known, documented
+// limitation of this query rather than an oversight, and does not affect
+// the common single-column case.
+func (e *Engine) ListForeignKeys(ctx context.Context, schema string) ([]dbengine.ForeignKey, error) {
+	if e.pool == nil {
+		return nil, ErrNotConnected
+	}
+	rows, err := e.pool.Query(ctx, listForeignKeysQuery, schema)
+	if err != nil {
+		return nil, translatePgError("list foreign keys", err)
+	}
+	defer rows.Close()
+
+	var foreignKeys []dbengine.ForeignKey
+	for rows.Next() {
+		var fk dbengine.ForeignKey
+		if err := rows.Scan(&fk.TableName, &fk.ColumnName, &fk.ReferencedTable, &fk.ReferencedColumn); err != nil {
+			return nil, translatePgError("scan foreign key", err)
+		}
+		foreignKeys = append(foreignKeys, fk)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, translatePgError("list foreign keys", err)
+	}
+	return foreignKeys, nil
+}
+
 // Close releases the connection pool. It is safe to call more than once.
 func (e *Engine) Close() error {
 	if e.pool != nil {

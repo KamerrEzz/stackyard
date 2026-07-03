@@ -14,6 +14,11 @@
 // 13307, distinct from every other integration test's port in this repo.
 // Everything created is torn down in t.Cleanup so the test is fully
 // self-cleaning and safely re-runnable.
+//
+// TestIntegration_MySQLEngine_ForeignKeys (tasks.md 4.5.1) reuses this same
+// pattern under a second test/profile/service ID (999018, host port 13310)
+// rather than sharing 999011's container/tables, keeping the two tests
+// independently runnable and cleanable.
 package mysql
 
 import (
@@ -191,6 +196,108 @@ func TestIntegration_MySQLEngine(t *testing.T) {
 		t.Error("Ping() after Close() should fail")
 	}
 	t.Log("Close() succeeded; Ping() after Close() correctly fails")
+}
+
+const (
+	mysqlFKIntegrationTestProfileID int64 = 999018
+	mysqlFKIntegrationTestServiceID int64 = 999018
+	mysqlFKIntegrationTestHostPort        = 13310
+)
+
+// TestIntegration_MySQLEngine_ForeignKeys (tasks.md 4.5.1) proves
+// ListForeignKeys against a real MySQL container with two tables and a
+// genuine FOREIGN KEY constraint between them (authors.id <- books.author_id),
+// not just a unit test against the query string.
+func TestIntegration_MySQLEngine_ForeignKeys(t *testing.T) {
+	dockerClient, err := docker.NewClient()
+	if err != nil {
+		t.Fatalf("docker.NewClient() failed: %v", err)
+	}
+	defer dockerClient.Close()
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer setupCancel()
+
+	if err := dockerClient.Ping(setupCtx); err != nil {
+		t.Fatalf("Ping() failed to reach the local Docker Engine: %v", err)
+	}
+
+	username := "stackyard_test"
+	password := "stackyard_test_pw"
+	dbName := "stackyard_test_db"
+
+	svc := storage.Service{
+		ID:                mysqlFKIntegrationTestServiceID,
+		ProfileID:         mysqlFKIntegrationTestProfileID,
+		Engine:            storage.EngineMySQL,
+		ImageTag:          "mysql:8",
+		HostPort:          mysqlFKIntegrationTestHostPort,
+		Username:          &username,
+		PasswordEncrypted: &password,
+		DBName:            &dbName,
+		VolumeName:        "stackyard-test-vol-dbengine-mysql-fk",
+	}
+
+	networkName := docker.ProfileNetworkName(svc.ProfileID)
+	containerName := docker.ServiceContainerName(svc.ID)
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+
+		if err := dockerClient.RemoveContainer(cleanupCtx, containerName); err != nil {
+			t.Logf("cleanup: failed to remove container %s: %v", containerName, err)
+		} else {
+			t.Logf("cleanup: removed container %s", containerName)
+		}
+		if err := dockerClient.RemoveVolume(cleanupCtx, svc.VolumeName); err != nil {
+			t.Logf("cleanup: failed to remove volume %s: %v", svc.VolumeName, err)
+		} else {
+			t.Logf("cleanup: removed volume %s", svc.VolumeName)
+		}
+		if err := dockerClient.RemoveNetwork(cleanupCtx, networkName); err != nil {
+			t.Logf("cleanup: failed to remove network %s: %v", networkName, err)
+		} else {
+			t.Logf("cleanup: removed network %s", networkName)
+		}
+	})
+
+	if err := dockerClient.StartMySQLEnvironment(setupCtx, svc); err != nil {
+		t.Fatalf("StartMySQLEnvironment() failed: %v", err)
+	}
+	t.Logf("StartMySQLEnvironment: network %q, volume %q, container %q created/started", networkName, svc.VolumeName, containerName)
+
+	dsn := fmt.Sprintf("%s:%s@tcp(127.0.0.1:%d)/%s?parseTime=true", username, password, svc.HostPort, dbName)
+	engine := New(dsn)
+
+	if err := waitForConnect(t, engine, 120*time.Second); err != nil {
+		t.Fatalf("Engine failed to become reachable within timeout: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+
+	if _, err := engine.Query(ctx, `CREATE TABLE authors (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64) NOT NULL)`); err != nil {
+		t.Fatalf("CREATE TABLE authors failed: %v", err)
+	}
+	if _, err := engine.Query(ctx, `CREATE TABLE books (id INT AUTO_INCREMENT PRIMARY KEY, title VARCHAR(64) NOT NULL, author_id INT, FOREIGN KEY (author_id) REFERENCES authors(id))`); err != nil {
+		t.Fatalf("CREATE TABLE books failed: %v", err)
+	}
+	t.Log("CREATE TABLE authors/books (with FK) succeeded")
+
+	foreignKeys, err := engine.ListForeignKeys(ctx, dbName)
+	if err != nil {
+		t.Fatalf("ListForeignKeys() failed: %v", err)
+	}
+	if len(foreignKeys) != 1 {
+		t.Fatalf("ListForeignKeys() = %+v, want exactly 1 foreign key", foreignKeys)
+	}
+
+	fk := foreignKeys[0]
+	if fk.TableName != "books" || fk.ColumnName != "author_id" || fk.ReferencedTable != "authors" || fk.ReferencedColumn != "id" {
+		t.Errorf("ListForeignKeys()[0] = %+v, want {books author_id authors id}", fk)
+	}
+	t.Logf("ListForeignKeys() succeeded: %+v", fk)
 }
 
 func waitForConnect(t *testing.T, engine *Engine, timeout time.Duration) error {

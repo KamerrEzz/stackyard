@@ -1330,3 +1330,119 @@ Phase 4 — most naturally alongside 4.6/4.7 (snippets can contain
 multi-statement SQL) or as its own explicit addition — rather than being
 silently dropped. Whoever picks up Phase 4 should decide and record
 which task absorbs it, not assume it's already covered.
+
+---
+
+## Session 5 — 2026-07-03 — Phase 4 wave 1 + Phase 4.5 (Schema Diagram)
+
+Four tasks ran concurrently: query history (4.5), snippets CRUD (4.6),
+autocomplete (4.8), and the erd-builder's Schema Diagram (4.5.1-4.5.5).
+All four landed and were reconciled; full `go build/vet/gofmt/test`,
+`-tags=integration`, `pnpm run build`, and `pnpm run test` (67/67 Vitest)
+are all green. **Real cleanup gap found and fixed**: some agent's manual
+verification used the real `CreateProfile` flow (not synthetic test
+IDs) and left behind real Docker resources (containers/network/volumes
+for profile IDs 4/5) plus a stray saved connection named `"a"` in the
+real app-data SQLite DB — all removed. **Lesson for future manual
+verification passes: prefer synthetic/high test IDs via
+`internal/docker` directly over the real `CreateProfile` bound method,
+specifically so leftover Docker resources are trivially greppable and
+distinguishable from real usage.**
+
+### Query history (4.5) — `internal/storage/query_history.go` + `app.go`
+
+- `QueryHistoryFilter{ConnectionID int64, SearchText string}` — Go-side
+  `LIKE` filtering, not fetch-all (matches 3.5/3.7 precedent).
+- **`ConnectionFormFields` gained a `SavedConnectionID int64` field**
+  (zero = ad-hoc, non-zero = traces to a real `connections` row) — this
+  is how `RunQuery` knows which connection a session belongs to for
+  logging purposes.
+- **Ad-hoc (never-saved) connections are NOT logged to history at
+  all** — `query_history.connection_id` is `NOT NULL REFERENCES
+  connections(id)` (confirmed in `migrations.go`), and auto-creating a
+  synthetic `connections` row for every ad-hoc session was rejected
+  (it would pollute the saved-connections list shown elsewhere in the
+  UI). This is a deliberate scope boundary consistent with spec.md
+  §4.10's "per-connection log" wording, not a bug — history only exists
+  for connections the user has actually saved.
+
+### Snippets CRUD (4.6) — `internal/storage/snippets.go` + `SnippetsPanel.tsx`
+
+- Compatible-engine filtering: `connection_id = ? OR (connection_id IS
+  NULL AND engine = ?)` — a global snippet is offered only to
+  connections of a matching engine (query text is dialect-specific); a
+  scoped snippet only to its own connection. `ListSnippetsForConnection`
+  is the convenience wrapper task 4.7 (Run snippet) should call directly.
+- Search is Go-side `LIKE` on name/tags, case-insensitive
+  (`COLLATE NOCASE`), with `%`/`_`/`\` escaped so search text is always
+  literal, never a LIKE pattern a user didn't intend.
+- `SnippetsPanel`'s scope UX: picking a saved connection as scope
+  auto-locks the engine picker to that connection's engine (a scoped
+  snippet's dialect must match); Global leaves it open.
+
+### Autocomplete (4.8) — `schemaCompletion.ts`/`schemaCompletionProvider.ts`
+
+- New bound methods `ListSchemasForSession`/`ListTablesForSession`,
+  under a more generous 10s `schemaIntrospectionTimeout` (vs. shorter
+  connect/test timeouts) since `information_schema` queries can be slow.
+- **Caching precedent for Phase 4.5 to reuse**: schema data is fetched
+  once per session (piggybacked on the tab's connection opening),
+  cached client-side in a `useRef`, with a manual "Refresh schema"
+  button — no server-side cache, frontend owns refetch timing.
+- **Cross-tab isolation, the core correctness requirement**: Monaco's
+  completion provider is registered ONCE globally (`sql` language), but
+  a `Map<ITextModel, () => TableInfo[]>` registry lets each `QueryEditor`
+  instance associate its own Monaco model with its own schema closure at
+  mount and deregister at unmount — tab A's tables never leak into tab
+  B's suggestions. Verified by an explicit isolation test in
+  `schemaCompletion.test.ts`.
+- Scope reduction, documented not hidden: suggestions are a flat
+  table+column list, not context-aware (no "after FROM prefer tables"
+  detection) — acceptable per the task's own instructions.
+
+### Schema Diagram (4.5.1-4.5.5) — `internal/diagram/relational.go` + `schema-diagram/`
+
+- **`Engine.ListForeignKeys(ctx, schema) ([]ForeignKey, error)`** added
+  to the interface (per-schema, mirrors `ListTables`) —
+  `ForeignKey{TableName, ColumnName, ReferencedTable, ReferencedColumn}`.
+  Postgres joins `table_constraints`/`key_column_usage`/
+  `constraint_column_usage`; MySQL filters
+  `information_schema.key_column_usage` on `referenced_table_name IS NOT
+  NULL`. Verified against a real `authors`/`books` FK relationship on
+  live Postgres AND MySQL containers.
+- **`BuildRelationalERDiagram(tables, foreignKeys) string`** — every FK
+  renders as `ReferencedTable ||--o{ TableName : "via <column>"` (one
+  referenced row, many referencing rows) — the standard relational
+  default, deliberately not upgraded to `||--||` even for a
+  FK-happens-to-be-unique case, since neither `TableInfo` nor
+  `ForeignKey` carry a uniqueness signal to detect that. Output was
+  verified twice: exact-string Go tests, AND those exact strings fed
+  through Mermaid's own real `mermaid.parse()` in Node to confirm they
+  parse as valid `erDiagram` syntax, not just string-equal in Go.
+- **Zoom/pan**: no new library — CSS `transform: translate() scale()`
+  on the SVG wrapper, wheel-to-zoom/drag-to-pan handlers. **Export**: SVG
+  via `XMLSerializer` on the live SVG node; PNG via drawing that SVG onto
+  a 2x-scaled `<canvas>` + `canvas.toBlob`. Legibility: `er.fontSize: 16`
+  (Mermaid's own default is 12) — a reasoned, not empirically
+  screenshot-verified, choice (no browser-automation tool was available
+  to that particular subagent invocation) — **worth a real visual check
+  at some point before shipping**, similar in spirit to how task 1.7/2.x
+  did real manual passes for their own features.
+- **Real bug fixed, shared root cause with an existing known issue**:
+  installing `mermaid` pulled in `@types/d3-dispatch` using TS 5.0+-only
+  syntax this project's pinned `typescript@4.6.4` can't parse, breaking
+  `tsc` for the WHOLE project. Fixed via a `pnpm-workspace.yaml`
+  `overrides` entry pinning `@types/d3-dispatch` to `3.0.1`. **Same root
+  cause as the already-known `@types/node@26`/vitest issue from task
+  3.7** — both are "a transitive dependency's types use newer TS syntax
+  than this project's pinned compiler" — worth resolving categorically
+  (e.g. bumping `typescript` itself) rather than patching one
+  `overrides` entry at a time, if this keeps recurring.
+- **Bundle size**: `mermaid` pulls in every diagram type it supports
+  (flowchart, sequence, gantt, etc.), not just `erDiagram` — another
+  entry for task 9.1's performance-pass list, alongside Monaco's
+  similar over-bundling from task 3.6.
+- The Schema Diagram view opens its OWN independent `OpenConnection`
+  session via a small self-contained connection mini-form — it shares
+  no runtime state with the DB Client's tabs, by design, avoiding any
+  collision with the concurrent Phase 4 grid/history/snippets work.

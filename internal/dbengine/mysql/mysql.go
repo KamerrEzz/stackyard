@@ -315,6 +315,43 @@ func (e *Engine) ListTables(ctx context.Context, schema string) ([]dbengine.Tabl
 	return result, nil
 }
 
+const listForeignKeysQuery = `
+SELECT table_name, column_name, referenced_table_name, referenced_column_name
+FROM information_schema.key_column_usage
+WHERE table_schema = ?
+	AND referenced_table_name IS NOT NULL
+ORDER BY table_name, ordinal_position`
+
+// ListForeignKeys returns every foreign key constraint in schema (a database
+// name, per the schema/database synonym documented on ListSchemas).
+// information_schema.key_column_usage already carries the referenced table/
+// column directly for foreign keys — unlike Postgres, no join against a
+// separate constraint-columns view is needed (the same asymmetry
+// ListTables' doc comment notes for primary-key detection).
+func (e *Engine) ListForeignKeys(ctx context.Context, schema string) ([]dbengine.ForeignKey, error) {
+	if e.db == nil {
+		return nil, ErrNotConnected
+	}
+	rows, err := e.db.QueryContext(ctx, listForeignKeysQuery, schema)
+	if err != nil {
+		return nil, translateMySQLError("list foreign keys", err)
+	}
+	defer rows.Close()
+
+	var foreignKeys []dbengine.ForeignKey
+	for rows.Next() {
+		var fk dbengine.ForeignKey
+		if err := rows.Scan(&fk.TableName, &fk.ColumnName, &fk.ReferencedTable, &fk.ReferencedColumn); err != nil {
+			return nil, translateMySQLError("scan foreign key", err)
+		}
+		foreignKeys = append(foreignKeys, fk)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, translateMySQLError("list foreign keys", err)
+	}
+	return foreignKeys, nil
+}
+
 // Close releases the connection pool. It is safe to call more than once.
 func (e *Engine) Close() error {
 	if e.db != nil {

@@ -13,6 +13,7 @@ import (
 	"stackyard/internal/dbengine"
 	dbenginemysql "stackyard/internal/dbengine/mysql"
 	dbenginepostgres "stackyard/internal/dbengine/postgres"
+	"stackyard/internal/diagram"
 	"stackyard/internal/docker"
 	"stackyard/internal/netcheck"
 	"stackyard/internal/storage"
@@ -68,6 +69,14 @@ const (
 	// a query editor session against an unreachable host fails fast instead
 	// of hanging the UI (tasks.md 3.6).
 	openConnectionTimeout = 5 * time.Second
+
+	// schemaIntrospectionTimeout bounds ListSchemasForSession/
+	// ListTablesForSession (tasks.md 4.8) — schema introspection queries
+	// information_schema/pg_catalog-style tables, which can be slower than a
+	// typical user query on a database with many objects, so this is
+	// deliberately more generous than openConnectionTimeout/
+	// testConnectionTimeout rather than sharing one of those budgets.
+	schemaIntrospectionTimeout = 10 * time.Second
 )
 
 // App struct is the ONLY surface bound to the frontend — every other package
@@ -113,9 +122,15 @@ type App struct {
 // querySession holds one live, connected dbengine.Engine bound to a
 // generated session ID (see OpenConnection), letting RunQuery/CancelQuery/
 // CloseConnectionSession reference it across separate IPC calls without the
-// frontend ever seeing the Engine value itself.
+// frontend ever seeing the Engine value itself. connectionID is non-nil
+// only when the session was opened from a saved storage.Connection (see
+// ConnectionFormFields.SavedConnectionID) — RunQuery's query history logging
+// (tasks.md 4.5) uses it to know which connections row to attribute an
+// execution to, and leaves it nil for an ad-hoc session opened straight
+// from "Test connection" fields that were never saved.
 type querySession struct {
-	engine dbengine.Engine
+	engine       dbengine.Engine
+	connectionID *int64
 }
 
 // NewApp creates a new App application struct
@@ -261,8 +276,14 @@ func (a *App) OpenConnection(fields ConnectionFormFields) (string, error) {
 		return "", fmt.Errorf("open connection: %w", err)
 	}
 
+	var connectionID *int64
+	if fields.SavedConnectionID != 0 {
+		savedID := fields.SavedConnectionID
+		connectionID = &savedID
+	}
+
 	id := uuid.NewString()
-	a.putQuerySession(id, &querySession{engine: engine})
+	a.putQuerySession(id, &querySession{engine: engine, connectionID: connectionID})
 	return id, nil
 }
 
@@ -281,6 +302,11 @@ func (a *App) OpenConnection(fields ConnectionFormFields) (string, error) {
 // cancels the second (newest) query, not the first — callers needing
 // independent, simultaneously cancellable queries should open a separate
 // session per query rather than share one (see OpenConnection).
+//
+// Every execution — success or failure — is logged to query_history via
+// recordQueryHistory (tasks.md 4.5, spec.md §4.10) when session was opened
+// from a saved connection; see recordQueryHistory's doc comment for why an
+// ad-hoc session isn't logged.
 func (a *App) RunQuery(sessionID string, query string) (*dbengine.QueryResult, error) {
 	session, ok := a.getQuerySession(sessionID)
 	if !ok {
@@ -294,9 +320,12 @@ func (a *App) RunQuery(sessionID string, query string) (*dbengine.QueryResult, e
 		cancel()
 	}()
 
-	result, err := session.engine.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("run query: %w", err)
+	start := time.Now()
+	result, queryErr := session.engine.Query(ctx, query)
+	a.recordQueryHistory(session.connectionID, query, time.Since(start), result, queryErr)
+
+	if queryErr != nil {
+		return nil, fmt.Errorf("run query: %w", queryErr)
 	}
 	return result, nil
 }
@@ -339,6 +368,112 @@ func (a *App) CloseConnectionSession(sessionID string) error {
 		return fmt.Errorf("close connection session: %w", err)
 	}
 	return nil
+}
+
+// ListSchemasForSession returns every schema (Postgres) or database (MySQL)
+// visible on the live Engine behind sessionID (see OpenConnection), for
+// Monaco autocomplete (tasks.md 4.8, spec.md §4.6). It queries live, never
+// from a cache — the frontend is what decides when to call this again (once
+// per tab-open plus an explicit "Refresh schema" action, not on every
+// keystroke — see QueryEditor.tsx). A nil result from the underlying Engine
+// is normalized to an empty slice before returning, matching the same
+// nil-slice-JSON-encodes-to-null convention ListConnections/ListProfiles
+// already establish.
+func (a *App) ListSchemasForSession(sessionID string) ([]string, error) {
+	session, ok := a.getQuerySession(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("list schemas: no open connection session %q", sessionID)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, schemaIntrospectionTimeout)
+	defer cancel()
+
+	schemas, err := session.engine.ListSchemas(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list schemas: %w", err)
+	}
+	if schemas == nil {
+		schemas = []string{}
+	}
+	return schemas, nil
+}
+
+// ListTablesForSession returns every table (with column metadata) in schema,
+// visible on the live Engine behind sessionID (see OpenConnection), for
+// Monaco autocomplete (tasks.md 4.8, spec.md §4.6). Same caching contract as
+// ListSchemasForSession: always queries live, the frontend controls refetch
+// timing.
+func (a *App) ListTablesForSession(sessionID string, schema string) ([]dbengine.TableInfo, error) {
+	session, ok := a.getQuerySession(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("list tables: no open connection session %q", sessionID)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, schemaIntrospectionTimeout)
+	defer cancel()
+
+	tables, err := session.engine.ListTables(ctx, schema)
+	if err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
+	if tables == nil {
+		tables = []dbengine.TableInfo{}
+	}
+	return tables, nil
+}
+
+// ListForeignKeysForSession returns every foreign key constraint in schema,
+// visible on the live Engine behind sessionID (see OpenConnection) — the
+// relationship metadata the schema diagram (spec.md §4.11, tasks.md 4.5.1)
+// needs beyond ListTablesForSession's table/column metadata. Same caching
+// contract as ListSchemasForSession/ListTablesForSession: always queries
+// live, the frontend controls refetch timing (the diagram's "Regenerate"
+// button, tasks.md 4.5.5 — this is never a background poll).
+func (a *App) ListForeignKeysForSession(sessionID string, schema string) ([]dbengine.ForeignKey, error) {
+	session, ok := a.getQuerySession(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("list foreign keys: no open connection session %q", sessionID)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, schemaIntrospectionTimeout)
+	defer cancel()
+
+	foreignKeys, err := session.engine.ListForeignKeys(ctx, schema)
+	if err != nil {
+		return nil, fmt.Errorf("list foreign keys: %w", err)
+	}
+	if foreignKeys == nil {
+		foreignKeys = []dbengine.ForeignKey{}
+	}
+	return foreignKeys, nil
+}
+
+// BuildSchemaDiagram fetches schema's tables (with columns) and foreign keys
+// from the live Engine behind sessionID and renders them as Mermaid
+// erDiagram text via diagram.BuildRelationalERDiagram (spec.md §4.11,
+// tasks.md 4.5.2). This is the single call the frontend's schema-diagram
+// view makes on mount and on every "Regenerate" click (tasks.md 4.5.5) —
+// there is no cached/auto-updating diagram state on the Go side, matching
+// spec.md §4.11's explicit "not a live/auto-updating view" requirement.
+func (a *App) BuildSchemaDiagram(sessionID string, schema string) (string, error) {
+	session, ok := a.getQuerySession(sessionID)
+	if !ok {
+		return "", fmt.Errorf("build schema diagram: no open connection session %q", sessionID)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, schemaIntrospectionTimeout)
+	defer cancel()
+
+	tables, err := session.engine.ListTables(ctx, schema)
+	if err != nil {
+		return "", fmt.Errorf("build schema diagram: %w", err)
+	}
+	foreignKeys, err := session.engine.ListForeignKeys(ctx, schema)
+	if err != nil {
+		return "", fmt.Errorf("build schema diagram: %w", err)
+	}
+
+	return diagram.BuildRelationalERDiagram(tables, foreignKeys), nil
 }
 
 func (a *App) requireDB() (*sql.DB, error) {
@@ -1210,6 +1345,15 @@ type ConnectionFormFields struct {
 	Password string
 	Database string
 	Params   map[string]string
+
+	// SavedConnectionID identifies the storage.Connection row these fields
+	// were loaded from (see connectionFormFieldsFromStored), or 0 for
+	// fields that were pasted/typed and never saved — the same
+	// zero-sentinel convention ServiceRequest.HostPort and
+	// SnippetFilter.ConnectionID already use at this bound-method boundary.
+	// OpenConnection reads it to decide which connections row RunQuery's
+	// history logging (tasks.md 4.5) should attribute an execution to.
+	SavedConnectionID int64
 }
 
 // toConnectionFormFields flattens a dbengine.ConnectionFields' url.Values
@@ -1451,6 +1595,10 @@ func paramsFromJSON(raw string) (map[string]string, error) {
 // into the same ConnectionFormFields shape the connection form UI already
 // works with (task 3.4), so loading a saved connection populates the form
 // exactly like ParseConnectionURL does for a freshly pasted string.
+// SavedConnectionID is always set to c.ID here — this is the single place
+// that stamps a session's eventual link back to its saved connections row
+// (see OpenConnection/ConnectionFormFields.SavedConnectionID), so every
+// caller of ConnectUsingSavedConnection gets it for free.
 func connectionFormFieldsFromStored(c storage.Connection) (ConnectionFormFields, error) {
 	params, err := paramsFromJSON(c.ParamsJSON)
 	if err != nil {
@@ -1458,13 +1606,14 @@ func connectionFormFieldsFromStored(c storage.Connection) (ConnectionFormFields,
 	}
 
 	return ConnectionFormFields{
-		Engine:   c.Engine,
-		Host:     c.Host,
-		Port:     c.Port,
-		Username: stringOrEmpty(c.Username),
-		Password: stringOrEmpty(c.PasswordEncrypted),
-		Database: stringOrEmpty(c.Database),
-		Params:   params,
+		Engine:            c.Engine,
+		Host:              c.Host,
+		Port:              c.Port,
+		Username:          stringOrEmpty(c.Username),
+		Password:          stringOrEmpty(c.PasswordEncrypted),
+		Database:          stringOrEmpty(c.Database),
+		Params:            params,
+		SavedConnectionID: c.ID,
 	}, nil
 }
 
@@ -1565,4 +1714,258 @@ func (a *App) ConnectUsingSavedConnection(id int64) (*ConnectionFormFields, erro
 		return nil, fmt.Errorf("connect using saved connection %d: %w", id, err)
 	}
 	return &fields, nil
+}
+
+// tagsToJSON marshals a snippet form's tags into the JSON array string
+// storage.Snippet.TagsJSON expects (tasks.md 4.6), defaulting a nil or empty
+// slice to "[]" rather than storing an empty string, which is not valid JSON
+// and would fail to round-trip through tagsFromJSON. Mirrors
+// paramsToJSON/paramsFromJSON's raw-JSON-string boundary convention
+// established for Connection.ParamsJSON.
+func tagsToJSON(tags []string) (string, error) {
+	if len(tags) == 0 {
+		return "[]", nil
+	}
+	data, err := json.Marshal(tags)
+	if err != nil {
+		return "", fmt.Errorf("encode snippet tags: %w", err)
+	}
+	return string(data), nil
+}
+
+// tagsFromJSON reverses tagsToJSON, decoding a stored Snippet's TagsJSON
+// back into []string.
+func tagsFromJSON(raw string) ([]string, error) {
+	if raw == "" {
+		return []string{}, nil
+	}
+	var tags []string
+	if err := json.Unmarshal([]byte(raw), &tags); err != nil {
+		return nil, fmt.Errorf("decode snippet tags: %w", err)
+	}
+	return tags, nil
+}
+
+// SnippetFilter is the Wails-bridge-safe shape of ListSnippets' filter
+// (tasks.md 4.6). It mirrors storage.SnippetFilter/storage.ConnectionScope
+// but flattens the connection-scope into two plain fields with zero-value
+// sentinels — ConnectionID == 0 means "no connection-scope filter" — rather
+// than a nested pointer struct, following the same sentinel convention
+// ServiceRequest.HostPort and PortConflictInfo.SuggestedPort already use at
+// this bound-method boundary. When ConnectionID is non-zero, Engine selects
+// which engine counts as "compatible" for global snippets (see
+// storage.ConnectionScope's doc comment) — the frontend is expected to pass
+// the active connection's own engine here, not let the user choose it
+// separately.
+type SnippetFilter struct {
+	SearchText   string
+	ConnectionID int64
+	Engine       storage.Engine
+}
+
+// ListSnippets returns every Snippet matching filter (tasks.md 4.6, spec.md
+// §4.7's "searchable by name and tag"). Leaving every field at its zero
+// value returns all snippets regardless of scope, which is what the
+// snippet-management UI needs; setting ConnectionID (plus Engine) narrows
+// the result to snippets usable from that specific connection — its own
+// scoped snippets plus compatible-engine global ones — via
+// storage.ListSnippetsForConnection.
+func (a *App) ListSnippets(filter SnippetFilter) ([]storage.Snippet, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+
+	storageFilter := storage.SnippetFilter{SearchText: filter.SearchText}
+	if filter.ConnectionID != 0 {
+		storageFilter.ForConnection = &storage.ConnectionScope{
+			ConnectionID: filter.ConnectionID,
+			Engine:       filter.Engine,
+		}
+	}
+
+	snippets, err := storage.ListSnippets(db, storageFilter)
+	if err != nil {
+		return nil, fmt.Errorf("list snippets: %w", err)
+	}
+	if snippets == nil {
+		snippets = []storage.Snippet{}
+	}
+	return snippets, nil
+}
+
+// CreateSnippet persists a new saved snippet (tasks.md 4.6, spec.md §4.7).
+// A nil connectionID marks the snippet global (usable from any connection
+// of a compatible engine); a non-nil connectionID scopes it to exactly that
+// connection — see storage.ConnectionScope for what "compatible" means when
+// listing. connectionID is a pointer (not a 0-sentinel int64) specifically
+// because it is passed straight through to storage.Snippet.ConnectionID,
+// which is itself *int64 for the same nil-means-global reason (models.go).
+func (a *App) CreateSnippet(name string, engine storage.Engine, body string, tags []string, connectionID *int64) (*storage.Snippet, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("create snippet: name is required")
+	}
+	if strings.TrimSpace(body) == "" {
+		return nil, fmt.Errorf("create snippet: body is required")
+	}
+
+	tagsJSON, err := tagsToJSON(tags)
+	if err != nil {
+		return nil, fmt.Errorf("create snippet %q: %w", name, err)
+	}
+
+	created, err := storage.CreateSnippet(db, &storage.Snippet{
+		ConnectionID: connectionID,
+		Engine:       engine,
+		Name:         name,
+		Body:         body,
+		TagsJSON:     tagsJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create snippet %q: %w", name, err)
+	}
+	return created, nil
+}
+
+// UpdateSnippet replaces every mutable field of an existing snippet in
+// place (tasks.md 4.6), following the same full-struct-replace convention
+// UpdateConnection already established. A nil connectionID demotes the
+// snippet to global, matching CreateSnippet's own convention.
+func (a *App) UpdateSnippet(id int64, name string, engine storage.Engine, body string, tags []string, connectionID *int64) (*storage.Snippet, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("update snippet %d: name is required", id)
+	}
+	if strings.TrimSpace(body) == "" {
+		return nil, fmt.Errorf("update snippet %d: body is required", id)
+	}
+
+	tagsJSON, err := tagsToJSON(tags)
+	if err != nil {
+		return nil, fmt.Errorf("update snippet %d: %w", id, err)
+	}
+
+	updated, err := storage.UpdateSnippet(db, &storage.Snippet{
+		ID:           id,
+		ConnectionID: connectionID,
+		Engine:       engine,
+		Name:         name,
+		Body:         body,
+		TagsJSON:     tagsJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("update snippet %d: %w", id, err)
+	}
+	return updated, nil
+}
+
+// DeleteSnippet permanently removes a saved snippet (tasks.md 4.6).
+func (a *App) DeleteSnippet(id int64) error {
+	db, err := a.requireDB()
+	if err != nil {
+		return err
+	}
+	if err := storage.DeleteSnippet(db, id); err != nil {
+		return fmt.Errorf("delete snippet %d: %w", id, err)
+	}
+	return nil
+}
+
+// recordQueryHistory persists one RunQuery execution to query_history
+// (tasks.md 4.5, spec.md §4.10) when connectionID is non-nil — i.e. the
+// session was opened from a saved storage.Connection (see
+// ConnectionFormFields.SavedConnectionID). A session opened straight from
+// "Test connection" fields that were never saved has no connections row,
+// and query_history.connection_id is a hard NOT NULL foreign key
+// (migrations.go); rather than auto-creating a synthetic connections row
+// for every ad-hoc session — which would silently pollute ListConnections'
+// saved-connections list with confusing entries the user never asked to
+// save — this treats spec.md §4.10's own framing ("Per-connection log of
+// executed queries") as the scope boundary: history is logged for saved
+// connections only. A failure to persist the entry itself (storage
+// unavailable, or any other write error) never fails the query the user
+// just ran — logging is best-effort, so it deliberately discards
+// storage.CreateQueryHistoryEntry's error rather than surfacing it.
+func (a *App) recordQueryHistory(connectionID *int64, query string, duration time.Duration, result *dbengine.QueryResult, queryErr error) {
+	if connectionID == nil || a.db == nil {
+		return
+	}
+
+	entry := &storage.QueryHistoryEntry{
+		ConnectionID: *connectionID,
+		QueryText:    query,
+		DurationMs:   duration.Milliseconds(),
+		Success:      queryErr == nil,
+		RowsAffected: rowsAffectedForHistory(result),
+	}
+	if queryErr != nil {
+		message := queryErr.Error()
+		entry.ErrorMessage = &message
+	}
+
+	_, _ = storage.CreateQueryHistoryEntry(a.db, entry)
+}
+
+// rowsAffectedForHistory prefers a QueryResult's own RowsAffected (set by
+// non-SELECT statements) and falls back to the number of rows a SELECT
+// returned, matching QueryEditor.tsx's existing "N row(s) affected" vs. "N
+// row(s) returned" display distinction (tasks.md 3.7, spec.md §4.10's "row
+// count affected/returned" requirement). result is nil for a failed
+// execution, in which case this reports 0.
+func rowsAffectedForHistory(result *dbengine.QueryResult) int64 {
+	if result == nil {
+		return 0
+	}
+	if result.RowsAffected > 0 {
+		return result.RowsAffected
+	}
+	return int64(len(result.Rows))
+}
+
+// ListQueryHistory returns every logged query execution matching filter,
+// most recently executed first (tasks.md 4.5, spec.md §4.10). Reuses
+// storage.QueryHistoryFilter directly as the bound-method parameter rather
+// than introducing an app.go-local mirror type (contrast SnippetFilter):
+// both of QueryHistoryFilter's fields are already primitive (int64, string)
+// with no Wails-JSON-shape concerns, so a duplicate type would add nothing.
+// Only executions run through a saved connection are ever logged (see
+// recordQueryHistory's doc comment) — an empty filter therefore lists every
+// saved connection's history, not history for ad-hoc/never-saved sessions,
+// which never reach query_history at all.
+func (a *App) ListQueryHistory(filter storage.QueryHistoryFilter) ([]storage.QueryHistoryEntry, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := storage.ListQueryHistory(db, filter)
+	if err != nil {
+		return nil, fmt.Errorf("list query history: %w", err)
+	}
+	if entries == nil {
+		entries = []storage.QueryHistoryEntry{}
+	}
+	return entries, nil
+}
+
+// DeleteQueryHistoryEntry permanently removes a single logged query
+// execution (tasks.md 4.5). There is no bulk "clear all history" action —
+// entries are removed one at a time, mirroring DeleteConnection/
+// DeleteSnippet's existing per-row delete pattern.
+func (a *App) DeleteQueryHistoryEntry(id int64) error {
+	db, err := a.requireDB()
+	if err != nil {
+		return err
+	}
+	if err := storage.DeleteQueryHistoryEntry(db, id); err != nil {
+		return fmt.Errorf("delete query history entry %d: %w", id, err)
+	}
+	return nil
 }

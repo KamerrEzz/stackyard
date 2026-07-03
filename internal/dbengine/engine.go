@@ -36,6 +36,14 @@ type Engine interface {
 	// without a later interface change.
 	ListTables(ctx context.Context, schema string) ([]TableInfo, error)
 
+	// ListForeignKeys returns every foreign key constraint across every
+	// table in the given schema (Postgres) or database (MySQL) — one call
+	// per schema, mirroring ListTables' scope, rather than one call per
+	// table. This is schema/relationship metadata for the schema-diagram
+	// feature (spec.md §4.11, tasks.md 4.5.1); it is not used by the query
+	// editor or grid.
+	ListForeignKeys(ctx context.Context, schema string) ([]ForeignKey, error)
+
 	// Close releases the underlying connection/pool.
 	Close() error
 }
@@ -81,4 +89,18 @@ type ColumnInfo struct {
 type TableInfo struct {
 	Name    string
 	Columns []ColumnInfo
+}
+
+// ForeignKey describes one foreign key constraint within a schema: the
+// column ColumnName on TableName references ReferencedColumn on
+// ReferencedTable. A composite foreign key (spanning more than one column)
+// is reported as multiple ForeignKey values sharing the same TableName/
+// ReferencedTable pair, one per column — schema-diagram rendering (tasks.md
+// 4.5.2) treats each as its own relationship line rather than needing a
+// dedicated composite-key representation.
+type ForeignKey struct {
+	TableName        string
+	ColumnName       string
+	ReferencedTable  string
+	ReferencedColumn string
 }

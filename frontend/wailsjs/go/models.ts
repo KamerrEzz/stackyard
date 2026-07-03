@@ -1,5 +1,41 @@
 export namespace dbengine {
 	
+	export class ColumnInfo {
+	    Name: string;
+	    DataType: string;
+	    Nullable: boolean;
+	    IsPrimaryKey: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ColumnInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Name = source["Name"];
+	        this.DataType = source["DataType"];
+	        this.Nullable = source["Nullable"];
+	        this.IsPrimaryKey = source["IsPrimaryKey"];
+	    }
+	}
+	export class ForeignKey {
+	    TableName: string;
+	    ColumnName: string;
+	    ReferencedTable: string;
+	    ReferencedColumn: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ForeignKey(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.TableName = source["TableName"];
+	        this.ColumnName = source["ColumnName"];
+	        this.ReferencedTable = source["ReferencedTable"];
+	        this.ReferencedColumn = source["ReferencedColumn"];
+	    }
+	}
 	export class ResultColumn {
 	    Name: string;
 	    DatabaseType: string;
@@ -52,6 +88,39 @@ export namespace dbengine {
 		    return a;
 		}
 	}
+	
+	export class TableInfo {
+	    Name: string;
+	    Columns: ColumnInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TableInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Name = source["Name"];
+	        this.Columns = this.convertValues(source["Columns"], ColumnInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 
@@ -65,6 +134,7 @@ export namespace main {
 	    Password: string;
 	    Database: string;
 	    Params: Record<string, string>;
+	    SavedConnectionID: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionFormFields(source);
@@ -79,6 +149,7 @@ export namespace main {
 	        this.Password = source["Password"];
 	        this.Database = source["Database"];
 	        this.Params = source["Params"];
+	        this.SavedConnectionID = source["SavedConnectionID"];
 	    }
 	}
 	export class PortConflictInfo {
@@ -143,6 +214,22 @@ export namespace main {
 	        this.HostPort = source["HostPort"];
 	    }
 	}
+	export class SnippetFilter {
+	    SearchText: string;
+	    ConnectionID: number;
+	    Engine: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SnippetFilter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.SearchText = source["SearchText"];
+	        this.ConnectionID = source["ConnectionID"];
+	        this.Engine = source["Engine"];
+	    }
+	}
 
 }
 
@@ -194,6 +281,46 @@ export namespace storage {
 	        this.CreatedAt = source["CreatedAt"];
 	    }
 	}
+	export class QueryHistoryEntry {
+	    ID: number;
+	    ConnectionID: number;
+	    QueryText: string;
+	    ExecutedAt: string;
+	    DurationMs: number;
+	    Success: boolean;
+	    RowsAffected: number;
+	    ErrorMessage?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryHistoryEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ID = source["ID"];
+	        this.ConnectionID = source["ConnectionID"];
+	        this.QueryText = source["QueryText"];
+	        this.ExecutedAt = source["ExecutedAt"];
+	        this.DurationMs = source["DurationMs"];
+	        this.Success = source["Success"];
+	        this.RowsAffected = source["RowsAffected"];
+	        this.ErrorMessage = source["ErrorMessage"];
+	    }
+	}
+	export class QueryHistoryFilter {
+	    ConnectionID: number;
+	    SearchText: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryHistoryFilter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ConnectionID = source["ConnectionID"];
+	        this.SearchText = source["SearchText"];
+	    }
+	}
 	export class Service {
 	    ID: number;
 	    ProfileID: number;
@@ -220,6 +347,32 @@ export namespace storage {
 	        this.PasswordEncrypted = source["PasswordEncrypted"];
 	        this.DBName = source["DBName"];
 	        this.VolumeName = source["VolumeName"];
+	    }
+	}
+	export class Snippet {
+	    ID: number;
+	    ConnectionID?: number;
+	    Engine: string;
+	    Name: string;
+	    Body: string;
+	    TagsJSON: string;
+	    CreatedAt: string;
+	    UpdatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Snippet(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ID = source["ID"];
+	        this.ConnectionID = source["ConnectionID"];
+	        this.Engine = source["Engine"];
+	        this.Name = source["Name"];
+	        this.Body = source["Body"];
+	        this.TagsJSON = source["TagsJSON"];
+	        this.CreatedAt = source["CreatedAt"];
+	        this.UpdatedAt = source["UpdatedAt"];
 	    }
 	}
 

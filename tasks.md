@@ -91,14 +91,14 @@ regardless of whether a task fully closes.
 - [ ] **4.3** Grid row delete with confirmation for multi-row deletes.
 - [ ] **4.4** Inline error surfacing: failed writes show the DB's actual
       error message on the offending cell/row.
-- [ ] **4.5** Query history: log every execution to `query_history`;
+- [x] **4.5** Query history: log every execution to `query_history`;
       build the filterable/searchable history panel; "replay into new
       tab" action.
-- [ ] **4.6** Snippets CRUD (name, tags, connection-scoped or global);
+- [x] **4.6** Snippets CRUD (name, tags, connection-scoped or global);
       snippet search by name/tag.
 - [ ] **4.7** "Run snippet" loads it into the current tab, or a new tab if
       the current one is dirty.
-- [ ] **4.8** Autocomplete: table/column suggestions in Monaco sourced
+- [x] **4.8** Autocomplete: table/column suggestions in Monaco sourced
       from `ListSchemas`/`ListTables`.
 
 ## Phase 4.5 — Schema Diagram (Relational)
@@ -107,14 +107,14 @@ Owned by the `erd-builder` subagent; can run in parallel with the rest of
 Phase 4 once Phase 3's `ListSchemas`/`ListTables` exist — it shares no
 code surface with the editable-grid work above.
 
-- [ ] **4.5.1** Extend the `Engine` interface with `ListForeignKeys`
+- [x] **4.5.1** Extend the `Engine` interface with `ListForeignKeys`
       (Postgres + MySQL) to obtain relationship metadata, not just
       tables/columns.
-- [ ] **4.5.2** `internal/diagram`: function that translates schema + FK
+- [x] **4.5.2** `internal/diagram`: function that translates schema + FK
       metadata into valid Mermaid `erDiagram` text.
-- [ ] **4.5.3** Frontend Mermaid rendering component with zoom/pan.
-- [ ] **4.5.4** Export to PNG/SVG and copy raw Mermaid text to clipboard.
-- [ ] **4.5.5** "Regenerate" button; legibility pass at projector scale
+- [x] **4.5.3** Frontend Mermaid rendering component with zoom/pan.
+- [x] **4.5.4** Export to PNG/SVG and copy raw Mermaid text to clipboard.
+- [x] **4.5.5** "Regenerate" button; legibility pass at projector scale
       (validate a minimum legible font size).
 
 ## Phase 5 — MongoDB

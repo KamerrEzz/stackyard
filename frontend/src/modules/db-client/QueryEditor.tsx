@@ -1,17 +1,31 @@
 import Editor from '@monaco-editor/react'
+import type * as monaco from 'monaco-editor'
 import {useCallback, useEffect, useRef, useState} from 'react'
 import '../../lib/monacoSetup'
-import {CancelQuery, CloseConnectionSession, OpenConnection, RunQuery} from '../../../wailsjs/go/main/App'
+import {
+    CancelQuery,
+    CloseConnectionSession,
+    ListSchemasForSession,
+    ListTablesForSession,
+    OpenConnection,
+    RunQuery,
+} from '../../../wailsjs/go/main/App'
 import type {dbengine, main} from '../../../wailsjs/go/models'
 import ResultsGrid from './ResultsGrid'
+import {registerModelSchemaProvider, unregisterModelSchemaProvider} from './schemaCompletion'
+import {ensureSqlCompletionProviderRegistered} from './schemaCompletionProvider'
 
 interface QueryEditorProps {
     fields: main.ConnectionFormFields
+    initialQuery?: string
 }
 
 type RunState = 'idle' | 'connecting' | 'running' | 'success' | 'error'
+type SchemaState = 'idle' | 'loading' | 'loaded' | 'error'
 
 const DEFAULT_QUERY = '-- Write a query and click "Run query"\nSELECT 1;'
+
+ensureSqlCompletionProviderRegistered()
 
 function monacoLanguageForEngine(engine: main.ConnectionFormFields['Engine']): string {
     switch (engine) {
@@ -23,13 +37,18 @@ function monacoLanguageForEngine(engine: main.ConnectionFormFields['Engine']): s
     }
 }
 
-function QueryEditor({fields}: QueryEditorProps) {
-    const [query, setQuery] = useState(DEFAULT_QUERY)
+function QueryEditor({fields, initialQuery}: QueryEditorProps) {
+    const [query, setQuery] = useState(initialQuery ?? DEFAULT_QUERY)
     const [runState, setRunState] = useState<RunState>('idle')
     const [errorMessage, setErrorMessage] = useState<string | null>(null)
     const [result, setResult] = useState<dbengine.QueryResult | null>(null)
 
+    const [schemaState, setSchemaState] = useState<SchemaState>('idle')
+    const [schemaError, setSchemaError] = useState<string | null>(null)
+
     const sessionIdRef = useRef<string | null>(null)
+    const schemaTablesRef = useRef<dbengine.TableInfo[]>([])
+    const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
 
     useEffect(() => {
         return () => {
@@ -37,6 +56,33 @@ function QueryEditor({fields}: QueryEditorProps) {
             if (sessionId) {
                 void CloseConnectionSession(sessionId)
             }
+            const model = editorRef.current?.getModel()
+            if (model) {
+                unregisterModelSchemaProvider(model)
+            }
+        }
+    }, [])
+
+    /**
+     * Loads every schema's tables (with columns) for sessionId and stores
+     * them in schemaTablesRef, the snapshot the registered completion
+     * provider reads from for this tab's editor model (tasks.md 4.8).
+     * Fetched once per session — right after OpenConnection succeeds (see
+     * ensureSession) — and again only on an explicit "Refresh schema" click,
+     * never on every keystroke: schema introspection is comparatively slow
+     * and doesn't change often enough to justify refetching it continuously.
+     */
+    const loadSchema = useCallback(async (sessionId: string) => {
+        setSchemaState('loading')
+        try {
+            const schemas = await ListSchemasForSession(sessionId)
+            const tablesBySchema = await Promise.all(schemas.map((schema) => ListTablesForSession(sessionId, schema)))
+            schemaTablesRef.current = tablesBySchema.flat()
+            setSchemaError(null)
+            setSchemaState('loaded')
+        } catch (err) {
+            setSchemaError(String(err))
+            setSchemaState('error')
         }
     }, [])
 
@@ -46,8 +92,27 @@ function QueryEditor({fields}: QueryEditorProps) {
         }
         const sessionId = await OpenConnection(fields)
         sessionIdRef.current = sessionId
+        void loadSchema(sessionId)
         return sessionId
-    }, [fields])
+    }, [fields, loadSchema])
+
+    const handleRefreshSchema = useCallback(async () => {
+        try {
+            const sessionId = await ensureSession()
+            await loadSchema(sessionId)
+        } catch (err) {
+            setSchemaError(String(err))
+            setSchemaState('error')
+        }
+    }, [ensureSession, loadSchema])
+
+    const handleEditorMount = useCallback((editor: monaco.editor.IStandaloneCodeEditor) => {
+        editorRef.current = editor
+        const model = editor.getModel()
+        if (model) {
+            registerModelSchemaProvider(model, () => schemaTablesRef.current)
+        }
+    }, [])
 
     const handleRunQuery = useCallback(async () => {
         setErrorMessage(null)
@@ -83,7 +148,22 @@ function QueryEditor({fields}: QueryEditorProps) {
         <div className="flex flex-col gap-3 rounded border border-ink-800 bg-ink-900/40 p-4">
             <div className="flex items-center justify-between">
                 <h2 className="text-xs uppercase tracking-widest text-ink-400">Query editor</h2>
-                <span className="font-mono text-xs text-ink-500">{fields.Engine}</span>
+                <div className="flex items-center gap-3">
+                    {schemaState === 'error' && schemaError && (
+                        <span className="text-xs text-red-400" title={schemaError}>
+                            Schema unavailable
+                        </span>
+                    )}
+                    <button
+                        type="button"
+                        onClick={() => void handleRefreshSchema()}
+                        disabled={schemaState === 'loading'}
+                        className="rounded border border-ink-700 px-2 py-1 text-xs text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        {schemaState === 'loading' ? 'Loading schema…' : 'Refresh schema'}
+                    </button>
+                    <span className="font-mono text-xs text-ink-500">{fields.Engine}</span>
+                </div>
             </div>
 
             <div className="overflow-hidden rounded border border-ink-700">
@@ -93,6 +173,7 @@ function QueryEditor({fields}: QueryEditorProps) {
                     theme="vs-dark"
                     value={query}
                     onChange={(value) => setQuery(value ?? '')}
+                    onMount={handleEditorMount}
                     options={{
                         minimap: {enabled: false},
                         fontSize: 13,

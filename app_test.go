@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -16,6 +17,40 @@ import (
 
 	mysqldriver "github.com/go-sql-driver/mysql"
 )
+
+// fakeSchemaEngine is a minimal dbengine.Engine stub used to exercise
+// ListSchemasForSession/ListTablesForSession's session-lookup and
+// nil-slice-normalization behavior without a live database connection — the
+// real per-engine ListSchemas/ListTables logic is already covered by
+// internal/dbengine's own postgres/mysql integration tests (tasks.md 3.2).
+type fakeSchemaEngine struct {
+	schemas        []string
+	schemasErr     error
+	tables         []dbengine.TableInfo
+	tablesErr      error
+	foreignKeys    []dbengine.ForeignKey
+	foreignKeysErr error
+}
+
+func (f *fakeSchemaEngine) Connect(context.Context) error { return nil }
+func (f *fakeSchemaEngine) Ping(context.Context) error    { return nil }
+func (f *fakeSchemaEngine) Query(context.Context, string) (*dbengine.QueryResult, error) {
+	return nil, nil
+}
+
+func (f *fakeSchemaEngine) ListSchemas(context.Context) ([]string, error) {
+	return f.schemas, f.schemasErr
+}
+
+func (f *fakeSchemaEngine) ListTables(context.Context, string) ([]dbengine.TableInfo, error) {
+	return f.tables, f.tablesErr
+}
+
+func (f *fakeSchemaEngine) ListForeignKeys(context.Context, string) ([]dbengine.ForeignKey, error) {
+	return f.foreignKeys, f.foreignKeysErr
+}
+
+func (f *fakeSchemaEngine) Close() error { return nil }
 
 func newTestApp(t *testing.T) *App {
 	t.Helper()
@@ -893,13 +928,14 @@ func TestConnectionFormFieldsFromStored_RehydratesAllFields(t *testing.T) {
 	}
 
 	want := ConnectionFormFields{
-		Engine:   storage.EnginePostgres,
-		Host:     "db.example.com",
-		Port:     5432,
-		Username: "alice",
-		Password: "s3cret",
-		Database: "mydb",
-		Params:   map[string]string{"sslmode": "require"},
+		Engine:            storage.EnginePostgres,
+		Host:              "db.example.com",
+		Port:              5432,
+		Username:          "alice",
+		Password:          "s3cret",
+		Database:          "mydb",
+		Params:            map[string]string{"sslmode": "require"},
+		SavedConnectionID: 7,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("connectionFormFieldsFromStored() = %+v, want %+v", got, want)
@@ -1098,13 +1134,14 @@ func TestApp_ConnectUsingSavedConnection_ReturnsFormFieldsAndBumpsLastUsedAt(t *
 	}
 
 	want := ConnectionFormFields{
-		Engine:   storage.EngineMySQL,
-		Host:     "db.example.com",
-		Port:     3306,
-		Username: "root",
-		Password: "mysql",
-		Database: "appdb",
-		Params:   map[string]string{"parseTime": "true"},
+		Engine:            storage.EngineMySQL,
+		Host:              "db.example.com",
+		Port:              3306,
+		Username:          "root",
+		Password:          "mysql",
+		Database:          "appdb",
+		Params:            map[string]string{"parseTime": "true"},
+		SavedConnectionID: saved.ID,
 	}
 	if !reflect.DeepEqual(*fields, want) {
 		t.Errorf("ConnectUsingSavedConnection() = %+v, want %+v", *fields, want)
@@ -1124,5 +1161,221 @@ func TestApp_ConnectUsingSavedConnection_NotFound(t *testing.T) {
 
 	if _, err := a.ConnectUsingSavedConnection(999999); err == nil {
 		t.Error("ConnectUsingSavedConnection() on a non-existent ID: expected an error, got nil")
+	}
+}
+
+func TestApp_ListSchemasForSession_UnknownSessionReturnsError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+
+	if _, err := a.ListSchemasForSession("does-not-exist"); err == nil {
+		t.Error("ListSchemasForSession() with an unknown session ID: expected an error, got nil")
+	}
+}
+
+func TestApp_ListSchemasForSession_ReturnsSchemasFromTheLiveEngine(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{schemas: []string{"public", "reporting"}}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	got, err := a.ListSchemasForSession("sess-1")
+	if err != nil {
+		t.Fatalf("ListSchemasForSession failed: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"public", "reporting"}) {
+		t.Errorf("ListSchemasForSession() = %v, want %v", got, []string{"public", "reporting"})
+	}
+}
+
+func TestApp_ListSchemasForSession_NormalizesNilResultToEmptySlice(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{schemas: nil}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	got, err := a.ListSchemasForSession("sess-1")
+	if err != nil {
+		t.Fatalf("ListSchemasForSession failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ListSchemasForSession() = nil, want a non-nil empty slice (a nil slice JSON-encodes to null)")
+	}
+	if len(got) != 0 {
+		t.Errorf("ListSchemasForSession() = %v, want empty", got)
+	}
+}
+
+func TestApp_ListSchemasForSession_SurfacesEngineError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{schemasErr: fmt.Errorf("boom")}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	if _, err := a.ListSchemasForSession("sess-1"); err == nil {
+		t.Error("ListSchemasForSession() with an engine error: expected an error, got nil")
+	}
+}
+
+func TestApp_ListTablesForSession_UnknownSessionReturnsError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+
+	if _, err := a.ListTablesForSession("does-not-exist", "public"); err == nil {
+		t.Error("ListTablesForSession() with an unknown session ID: expected an error, got nil")
+	}
+}
+
+func TestApp_ListTablesForSession_ReturnsTablesFromTheLiveEngine(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	want := []dbengine.TableInfo{
+		{Name: "users", Columns: []dbengine.ColumnInfo{{Name: "id", DataType: "integer", IsPrimaryKey: true}}},
+	}
+	fake := &fakeSchemaEngine{tables: want}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	got, err := a.ListTablesForSession("sess-1", "public")
+	if err != nil {
+		t.Fatalf("ListTablesForSession failed: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ListTablesForSession() = %+v, want %+v", got, want)
+	}
+}
+
+func TestApp_ListTablesForSession_NormalizesNilResultToEmptySlice(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{tables: nil}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	got, err := a.ListTablesForSession("sess-1", "public")
+	if err != nil {
+		t.Fatalf("ListTablesForSession failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ListTablesForSession() = nil, want a non-nil empty slice (a nil slice JSON-encodes to null)")
+	}
+	if len(got) != 0 {
+		t.Errorf("ListTablesForSession() = %+v, want empty", got)
+	}
+}
+
+func TestApp_ListTablesForSession_SurfacesEngineError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{tablesErr: fmt.Errorf("boom")}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	if _, err := a.ListTablesForSession("sess-1", "public"); err == nil {
+		t.Error("ListTablesForSession() with an engine error: expected an error, got nil")
+	}
+}
+
+func TestApp_ListForeignKeysForSession_UnknownSessionReturnsError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+
+	if _, err := a.ListForeignKeysForSession("does-not-exist", "public"); err == nil {
+		t.Error("ListForeignKeysForSession() with an unknown session ID: expected an error, got nil")
+	}
+}
+
+func TestApp_ListForeignKeysForSession_ReturnsForeignKeysFromTheLiveEngine(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	want := []dbengine.ForeignKey{
+		{TableName: "books", ColumnName: "author_id", ReferencedTable: "authors", ReferencedColumn: "id"},
+	}
+	fake := &fakeSchemaEngine{foreignKeys: want}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	got, err := a.ListForeignKeysForSession("sess-1", "public")
+	if err != nil {
+		t.Fatalf("ListForeignKeysForSession failed: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ListForeignKeysForSession() = %+v, want %+v", got, want)
+	}
+}
+
+func TestApp_ListForeignKeysForSession_NormalizesNilResultToEmptySlice(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{foreignKeys: nil}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	got, err := a.ListForeignKeysForSession("sess-1", "public")
+	if err != nil {
+		t.Fatalf("ListForeignKeysForSession failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ListForeignKeysForSession() = nil, want a non-nil empty slice (a nil slice JSON-encodes to null)")
+	}
+	if len(got) != 0 {
+		t.Errorf("ListForeignKeysForSession() = %+v, want empty", got)
+	}
+}
+
+func TestApp_ListForeignKeysForSession_SurfacesEngineError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{foreignKeysErr: fmt.Errorf("boom")}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	if _, err := a.ListForeignKeysForSession("sess-1", "public"); err == nil {
+		t.Error("ListForeignKeysForSession() with an engine error: expected an error, got nil")
+	}
+}
+
+func TestApp_BuildSchemaDiagram_UnknownSessionReturnsError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+
+	if _, err := a.BuildSchemaDiagram("does-not-exist", "public"); err == nil {
+		t.Error("BuildSchemaDiagram() with an unknown session ID: expected an error, got nil")
+	}
+}
+
+func TestApp_BuildSchemaDiagram_RendersMermaidFromTablesAndForeignKeys(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{
+		tables: []dbengine.TableInfo{
+			{Name: "authors", Columns: []dbengine.ColumnInfo{{Name: "id", DataType: "int4", IsPrimaryKey: true}}},
+			{Name: "books", Columns: []dbengine.ColumnInfo{
+				{Name: "id", DataType: "int4", IsPrimaryKey: true},
+				{Name: "author_id", DataType: "int4"},
+			}},
+		},
+		foreignKeys: []dbengine.ForeignKey{
+			{TableName: "books", ColumnName: "author_id", ReferencedTable: "authors", ReferencedColumn: "id"},
+		},
+	}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	got, err := a.BuildSchemaDiagram("sess-1", "public")
+	if err != nil {
+		t.Fatalf("BuildSchemaDiagram failed: %v", err)
+	}
+
+	want := "erDiagram\n" +
+		"    authors {\n" +
+		"        int4 id PK\n" +
+		"    }\n" +
+		"    books {\n" +
+		"        int4 id PK\n" +
+		"        int4 author_id FK\n" +
+		"    }\n" +
+		"    authors ||--o{ books : \"via author_id\"\n"
+	if got != want {
+		t.Errorf("BuildSchemaDiagram() =\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApp_BuildSchemaDiagram_SurfacesTablesEngineError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{tablesErr: fmt.Errorf("boom")}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	if _, err := a.BuildSchemaDiagram("sess-1", "public"); err == nil {
+		t.Error("BuildSchemaDiagram() with a ListTables engine error: expected an error, got nil")
+	}
+}
+
+func TestApp_BuildSchemaDiagram_SurfacesForeignKeysEngineError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	fake := &fakeSchemaEngine{foreignKeysErr: fmt.Errorf("boom")}
+	a.putQuerySession("sess-1", &querySession{engine: fake})
+
+	if _, err := a.BuildSchemaDiagram("sess-1", "public"); err == nil {
+		t.Error("BuildSchemaDiagram() with a ListForeignKeys engine error: expected an error, got nil")
 	}
 }

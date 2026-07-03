@@ -4,11 +4,13 @@ import TopBar from './components/TopBar'
 import EnvironmentManagerView from './modules/environment-manager/EnvironmentManagerView'
 import StatusDashboard from './modules/environment-manager/StatusDashboard'
 import DbClientView from './modules/db-client/DbClientView'
+import SchemaDiagramView from './modules/schema-diagram/SchemaDiagramView'
 
 const VIEW_TITLES: Record<ViewKey, string> = {
     environments: 'Environment Manager',
     'db-client': 'DB Client',
     status: 'Status Dashboard',
+    'schema-diagram': 'Schema Diagram',
 }
 
 function App() {
@@ -22,6 +24,7 @@ function App() {
                 <main className="flex-1 overflow-auto p-6">
                     {activeView === 'environments' && <EnvironmentManagerView/>}
                     {activeView === 'db-client' && <DbClientView/>}
+                    {activeView === 'schema-diagram' && <SchemaDiagramView/>}
                     {activeView === 'status' && <StatusDashboard/>}
                 </main>
             </div>
