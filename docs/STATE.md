@@ -4321,33 +4321,138 @@ and ran concurrently. This section consolidates what the orchestrator
 found and fixed across all four after they landed, beyond what each
 task's own report already covers above.
 
-### Task 10.1 — custom service credentials, orchestrator notes
+### Task 10.1 — custom service credentials at profile creation
 
-Independently verified by the implementing session itself (it spawned
-its own fresh-context review agent with no memory of the
-implementation, which re-ran every command and read every changed file
-cold — zero correctness bugs, zero comment-style violations found).
-Nothing further to add beyond what's already documented in that
-session's own report; `ServiceRequest`'s extension and the
-`overrideOrDefault` helper in `app.go` are exactly as reported.
+`app.go`'s `ServiceRequest` gained three plain-string fields:
+```go
+type ServiceRequest struct {
+	Engine   storage.Engine
+	HostPort int
+	Username string
+	Password string
+	DBName   string
+}
+```
+Plain strings (empty = unset), not `*string` — deliberately matching
+`ConnectionFormFields`'s existing request-boundary convention rather
+than `engineDefaults`' internal computed-defaults convention, since
+this is a Wails-bridge-facing request type like the former, not an
+internal computation result like the latter.
 
-### Task 10.2 — create-table UI, orchestrator notes
+`overrideOrDefault(requested string, fallback *string) *string`
+prefers the request's own value when non-empty, falling back to
+`defaultsForEngine`'s built-in default otherwise — wired into
+`CreateProfile`'s existing per-service loop (`defaultsForEngine` itself
+was left untouched, staying a pure "what are the defaults" function).
 
-Verified directly: `internal/dbengine/createtable.go`'s
-`BuildCreateTableDDL` and the curated column-type list
-(text/varchar(255)/integer/bigint/serial/bigserial/boolean/timestamp/
-numeric) match the report. The integration test's own discovery — that
-an unquoted `Default` value produces a real DB syntax error rather than
-being silently mis-quoted — is a good, deliberate design confirmation,
-not a bug that slipped through.
+Redis rejects `Username`/`DBName` requests via
+`redisCredentialFieldsError`, checked **before** `storage.CreateProfile`
+runs — no orphaned profile row on a rejected request (independently
+re-verified by qa-reviewer: the `profiles` row count is unchanged after
+a rejected request, confirmed live, not just by reading the code order).
+Password IS allowed for Redis and genuinely wired through to
+`internal/docker/redis.go`'s `--requirepass` flag — a custom Redis
+password is a real, working feature, not silently ignored.
 
-### Task 10.3 — snippet template gallery, orchestrator notes
+Frontend: `credentialValidation.ts`'s `validateEngineCredentials`
+mirrors the backend rule exactly (password-without-username allowed for
+Postgres/MySQL/MongoDB — customizing the default account's password
+only; username-without-password blocked — prevents the backend from
+silently backfilling the well-known default password onto a custom
+username). UI is a per-engine expandable "Custom credentials…" toggle
+in `EnvironmentManagerView.tsx`'s new `EngineSelectionRow` component,
+not one shared credential block — a multi-engine profile's credentials
+are unrelated across engines, so one shared set would have been wrong.
 
-Verified directly: the three templates (auth/audit-log/settings-kv)
-and their per-engine SQL variants match the report; MySQL's
-`audit_log.metadata` nullability difference from Postgres is a real,
-documented per-engine SQL constraint (MySQL pre-8.0.13 can't take a
-literal JSON `DEFAULT` value), not an oversight.
+Live-verified (qa-reviewer, independently): created a real Postgres
+profile with custom credentials via the actual `CreateProfile` bound
+method, confirmed the resulting container genuinely rejects the OLD
+default credentials and only accepts the new custom ones.
+
+### Task 10.2 — create-table UI without writing SQL
+
+`internal/dbengine/createtable.go`: `ColumnDefinition`/`ColumnType` +
+`BuildCreateTableDDL(dialect, schema, table, columns) (string, error)`.
+Curated column-type list (deliberately not exposing every possible
+Postgres/MySQL type): `text`, `varchar` (fixed length 255, no length
+input in the form), `integer`, `bigint`, `serial`/`bigserial`
+(auto-increment, MUST be the primary key — validated Go-side in
+`BuildCreateTableDDL` and mirrored in `createTableHelpers.ts`'s
+`validateCreateTableForm`, since MySQL requires this and Postgres's
+serial/bigserial only make sense that way), `boolean`, `timestamp`,
+`numeric`.
+
+Per-engine DDL differences handled explicitly, not left to a generic
+mapping: `SERIAL`/`BIGSERIAL` (Postgres) vs. `INT`/`BIGINT ...
+AUTO_INCREMENT` (MySQL); `INTEGER` vs `INT`; `TIMESTAMP` vs `DATETIME`
+(deliberately avoiding MySQL's legacy implicit-default/auto-update
+`TIMESTAMP` quirk — a real footgun in MySQL's type system, not
+something to accidentally inherit); `NUMERIC` vs `DECIMAL`.
+
+`Default` is a raw SQL expression appended verbatim to the generated
+DDL — matches this app's existing "trust the user's SQL" model (the
+same trust boundary the query editor itself already has). This was
+caught and CONFIRMED correct by the integration test's own development
+process: an early version of the test passed an unquoted Go string
+literal as a default and got a real database syntax error back — proving
+the lack of auto-quoting is enforced as designed, not a bug that
+silently corrupts data.
+
+Deliberately did NOT reuse `internal/export/sqldump.go`'s existing
+`BuildCreateTable`/`ColumnDumpInfo` (which already solves an adjacent
+problem — generating `CREATE TABLE` DDL from column metadata for the
+SQL-dump export feature): that path re-serializes an EXISTING table's
+already-resolved column types coming from real introspection, while
+this path needs a curated INPUT type list plus new auto-increment
+validation with no equivalent in the export path. Read-only reference,
+no modification to the export code.
+
+Live-verified (qa-reviewer, independently, re-running the existing
+integration tests): created a real table with a primary key, a
+nullable column, a non-nullable column, and a default value against
+both a live Postgres and a live MySQL container; confirmed via
+`ListTablesForSession` and real `InsertTableRow` calls (including
+actual auto-increment ordering across two sequential inserts) that the
+created table's structure matches the request exactly.
+
+### Task 10.3 — SQL snippet template gallery
+
+`internal/snippettemplates/templates.go`: a plain, static
+`Template{ID, Name, Description, SQL map[storage.Engine]string}` slice
+with a `List()` accessor — no database, no persistence, no user
+editing. Chose Go over frontend-static TypeScript specifically so a
+real Go integration test could prove each template's SQL against live
+Postgres/MySQL containers (not just eyeballed for plausibility).
+
+Three templates, each with a genuinely dialect-correct SQL string per
+engine (not one shared string reused across both):
+1. **Auth: users + sessions + tokens** — the one explicitly requested
+   by the user — a `users` table (id, email, password_hash,
+   created_at) plus a `refresh_tokens` table foreign-keyed to it.
+2. **Audit log** — an append-only `audit_log` table. MySQL's version
+   makes `metadata` nullable, while Postgres's version uses `NOT NULL
+   DEFAULT '{}'` — a real per-engine SQL constraint, not an oversight:
+   MySQL versions before 8.0.13 cannot take a literal JSON value as a
+   column `DEFAULT`, so the Postgres-only default had no safe MySQL
+   equivalent without either dropping the constraint or requiring a
+   newer MySQL version than this project otherwise assumes.
+3. **Settings / key-value config** — a generic `settings` table.
+
+Two independent actions per template, not one: "Load into editor"
+targets only the currently active SQL tab (matched against the
+gallery's own Postgres/MySQL toggle) — deliberately does NOT
+auto-open a new tab the way task 4.7's saved-snippet "Run" does, since
+a built-in template has no owning connection to open a tab against.
+"Save as my snippet" calls the existing `CreateSnippet` bound method
+directly, tagged `['template']`, global scope — independently
+confirmed by qa-reviewer to be a real call (`CreateSnippet(template
+.Name, engine, sql, ['template'], null)`), not a cosmetic stub.
+
+Live-verified (qa-reviewer, independently): ran all 3 templates' SQL
+for both engine variants against real live Postgres and MySQL
+containers, confirming each creates its intended tables and a basic
+INSERT+SELECT (including the auth template's FK join) round-trips
+correctly.
 
 ### Real bug found during reconciliation: an actual ID collision, not just a near-miss
 
@@ -4391,11 +4496,113 @@ just "does this digit sequence appear anywhere in the repo" — the
 latter conflates one file's multiple internal references to its own ID
 with two different files coincidentally sharing one.
 
+### Independent qa-reviewer pass confirmed all 5 sub-tasks, including live-container checks
+
+A fresh-context qa-reviewer pass re-verified every sub-task
+independently rather than trusting the reports above — wrote its own
+throwaway integration test for 10.1 (confirming a real container
+genuinely rejects the old default credentials once custom ones are
+set, deleted after use), re-ran 10.2/10.3's existing integration tests
+live, and read the actual generated Prisma/Drizzle text for 10.4/10.5
+to confirm real `@relation`/`references()` syntax is present, not just
+mapped column types. Verdict: COMPLIANT on all 5. Re-ran the full
+`go test -tags=integration ./...` suite twice back-to-back itself and
+confirmed the ID-collision fix genuinely holds (no flaky failures).
+
+One incidental observation, not acted on: pre-existing Docker resources
+(`stackyard-profile-12`/`stackyard-vol-profile-12-postgres`, matching
+the real production naming convention) were found on this machine,
+created before the review started — almost certainly a real profile
+from the user's own earlier dogfooding, not test debris. Correctly left
+untouched rather than risk deleting real data.
+
 ### Phase 10 status: CLOSED
 
 All of `tasks.md` 10.1-10.5 are checked. All four features implemented,
 tested (unit + live-container integration), and independently
-cross-verified. `go build/vet/gofmt` clean; `go test ./...` and
+cross-verified — including a full adversarial qa-reviewer pass with its
+own live-container checks, not just each implementer's self-report.
+`go build/vet/gofmt` clean; `go test ./...` and
 `go test -tags=integration ./...` both green and confirmed stable
-across repeated back-to-back runs; `pnpm run build`/`pnpm run test`
-(244/244) green.
+across repeated back-to-back runs (verified independently twice: once
+by the orchestrator, once by qa-reviewer); `pnpm run build`/`pnpm run
+test` (244/244) green.
+
+---
+
+## Session 22/23 close-out — current phase, last task, next steps
+
+**Current phase:** Phase 10 ("v1.1: user-requested enhancements",
+`tasks.md` 10.1-10.5) is complete and closed. This is post-v1 scope
+requested directly by the user after real hands-on use of the shipped
+v1 build — it is **not** one of `plan.md` §6's original roadmap phases
+(1-9), so it doesn't carry the same "closes a module" framing those did.
+See the "Phase 10 opens" section (Session 22) for the exact
+clarification trail behind each of the 4 items, and "Phase 10
+reconciliation" (above) for the cross-task verification pass.
+
+**Last task completed:** 10.4/10.5 (Prisma/Drizzle schema export,
+Session 23), followed by the orchestrator's reconciliation pass across
+all four Phase 10 work streams, which found and fixed a real
+integration-test ID collision (999033/999034 double-booked between
+`schemaexport_integration_test.go` and
+`internal/snippettemplates/templates_integration_test.go`, reassigned to
+999035/999036 — see "Real bug found during reconciliation" above).
+
+**In-flight / undecided items carried forward:**
+
+- Item 2 from Session 22's feedback list ("Browse/edit table data") was
+  flagged to the user as already existing (the Tables list's "Browse"
+  button, task 4.1) rather than a real gap — pending the user's
+  confirmation on whether this is a discoverability problem worth a UI
+  tweak. No action taken.
+- The still-undecided credential-encryption-at-rest gap
+  (`Service.PasswordEncrypted`/`Connection.PasswordEncrypted` hold
+  plaintext — flagged since Session 3's close-out) remains open; Phase
+  10's task 10.1 added more plaintext credential fields on top of it
+  (custom username/password/database-name) without addressing the
+  underlying gap, since 10.1's clarified scope was credential
+  *configurability*, not credential *storage security*.
+- No automated guard exists yet against the `9990\d\d` integration-test
+  ID collision class — this is now the *third* documented instance of
+  this exact failure mode (Session 3's Phase 2 wave, Session 14/Phase 8,
+  and this session's Phase 10 reconciliation). Worth a real fix (e.g. a
+  single source-of-truth constants file, or a pre-commit grep check)
+  rather than a fourth retroactive catch next time.
+
+**Version tag status:** `v1.0.0` was already proposed (and remains
+un-executed) at the close of Phase 9 — see the "Proposed version tags"
+section for the exact command. **Phase 10 does not get its own tag
+proposal.** Its features are new, unplanned post-v1 scope with no
+`plan.md` §6 roadmap slot to map to a version number the way Phases 1-9
+each did. Once the user decides to cut a `v1.1` release incorporating
+Phase 10's four features (custom credentials, Create Table UI, snippet
+templates, Prisma/Drizzle export), the logical tag at that point would
+be `v1.1.0` — this is the user's call on timing, not something to
+schedule or force onto the existing tag list now.
+
+**Command to run the app locally:**
+
+```
+cd D:\CODE\projects\Stackyard
+wails dev
+```
+
+(Unchanged since Phase 0 — see Session 1's pnpm/`wails.json` gotcha if
+this fails with an `EUNSUPPORTEDPROTOCOL`-style error.)
+
+**Run tests:**
+
+```
+cd D:\CODE\projects\Stackyard
+go test ./...
+go test -tags=integration ./...
+pnpm run build
+pnpm run test
+```
+
+**Next steps:** No further Phase 10 work is scheduled. Nothing in
+`tasks.md` beyond 10.1-10.5 is currently open. Any further work is
+either a new user-requested increment (would become Phase 11+, same
+post-v1 pattern as Phase 10) or a resolution of one of the in-flight
+items listed above.

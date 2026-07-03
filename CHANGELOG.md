@@ -645,3 +645,74 @@ real versioning decision.
   full ripple was independently re-verified by a fresh-context
   adversarial reviewer (repo-wide grep for `.Columns\b`), not just
   trusted from the implementing task's own report.
+
+## Phase 10 — v1.1: user-requested enhancements (post-v1 scope)
+
+Genuinely new scope requested by the user after real hands-on use of the
+shipped v1 build — not part of the original `spec.md`/`plan.md` v1
+definition. Each item was clarified with the user before implementation
+(see `docs/STATE.md`'s Phase 10 sections for the full clarification
+trail).
+
+### Added
+
+- Environments: optional custom username/password/database-name fields
+  on the "Create profile" form for Postgres/MySQL/MongoDB, set once at
+  creation time and fixed afterward — deliberately not live credential
+  rotation on an already-running container, since Postgres/MySQL don't
+  expose an easy way to change the bootstrap superuser's password
+  without a stop + recreate + likely volume reset. Redis rejects
+  username/database-name (no such concept for Redis) but still allows a
+  custom password (task 10.1).
+- DB Client "Create table" UI: a form (table name + columns, each with
+  type/nullable/primary-key/default) that generates and runs a real
+  `CREATE TABLE` against Postgres/MySQL. `internal/dbengine/createtable.go`'s
+  `BuildCreateTableDDL` uses a curated column-type list
+  (text/varchar(255)/integer/bigint/serial/bigserial/boolean/timestamp/
+  numeric) with per-engine DDL handling (Postgres `SERIAL`/`BIGSERIAL`
+  vs. MySQL `AUTO_INCREMENT`, `TIMESTAMP` vs. `DATETIME`, etc.) (task
+  10.2).
+- DB Client SQL snippet template gallery: three built-in templates (auth
+  — users + sessions + tokens; audit log; settings key-value), each
+  loadable directly into the query editor or saveable as a real user
+  snippet with one click, Postgres/MySQL. MySQL's `audit_log.metadata`
+  column intentionally differs in nullability from Postgres's — MySQL
+  pre-8.0.13 cannot take a literal JSON `DEFAULT` value (task 10.3).
+- DB Client schema export: export an existing connection's schema as a
+  real `schema.prisma` file (task 10.4) or a real Drizzle `schema.ts`
+  file (task 10.5), both built on the existing `ListTables`/
+  `ListForeignKeys` introspection with no new schema-reading code. New
+  `internal/schemaexport` package (`prisma.go`, `drizzle.go`,
+  `typemap.go`, `identifiers.go`) renders foreign keys as Prisma relation
+  fields (with back-relations) and Drizzle `.references(() => ...)`
+  calls; composite (multi-column) foreign keys are deliberately not
+  merged into a single relation, matching the existing Schema Diagram
+  generator's own documented limitation. Exposed as
+  `ExportSchemaAsPrisma`/`ExportSchemaAsDrizzle` bound methods, reachable
+  from a new per-schema export action pair in `QueryEditor.tsx`'s Tables
+  panel. Documented lossy judgment calls: MySQL's `tinyint`-as-boolean
+  convention isn't detected, Postgres array columns and MySQL
+  varchar/char real lengths fall back to generic defaults, `bigint`
+  defaults to Drizzle's `{ mode: "number" }`, and column defaults are
+  never emitted in either target (`ColumnInfo` has no default-value
+  field to translate).
+
+This completes **Phase 10** (tasks 10.1-10.5) — see `docs/STATE.md` for
+why this phase does not map to a `plan.md` §6 roadmap phase and is not
+tied to a version-bump tag the way Phases 1-9 were.
+
+### Fixed
+
+- Integration-test ID collision between two of Phase 10's four parallel
+  work streams: `schemaexport_integration_test.go` and
+  `internal/snippettemplates/templates_integration_test.go` both
+  independently used profile/service IDs 999033/999034, causing
+  intermittent "connection actively refused" failures on a full
+  `go test -tags=integration ./...` rerun that were initially
+  (incompletely) attributed to transient Docker/WSL2 resource
+  contention. Found by grepping the literal ID-assignment pattern
+  (`int64 = 9990\d\d`) rather than any occurrence of the digit sequence,
+  which can't distinguish one file reusing its own ID from two files
+  colliding. Fixed by reassigning `schemaexport_integration_test.go` to
+  999035/999036 (its host ports were already unique); confirmed stable
+  across repeated back-to-back full integration-suite runs afterward.
