@@ -12,11 +12,26 @@ import (
 )
 
 const (
-	defaultPostgresImageTag  = "postgres:16-alpine"
-	defaultPostgresHostPort  = 5432
-	defaultPostgresUsername  = "postgres"
-	defaultPostgresPassword  = "postgres"
-	defaultPostgresDBName    = "postgres"
+	defaultPostgresImageTag = "postgres:16-alpine"
+	defaultPostgresHostPort = 5432
+	defaultPostgresUsername = "postgres"
+	defaultPostgresPassword = "postgres"
+	defaultPostgresDBName   = "postgres"
+
+	defaultMySQLImageTag = "mysql:8"
+	defaultMySQLHostPort = 3306
+	defaultMySQLUsername = "root"
+	defaultMySQLPassword = "mysql"
+	defaultMySQLDBName   = "mysql"
+
+	defaultMongoImageTag = "mongo:7"
+	defaultMongoHostPort = 27017
+	defaultMongoUsername = "root"
+	defaultMongoPassword = "mongo"
+
+	defaultRedisImageTag = "redis:7-alpine"
+	defaultRedisHostPort = 6379
+
 	dockerOpTimeout          = 60 * time.Second
 	dockerStopTimeout        = 30 * time.Second
 	dockerStatusTimeout      = 15 * time.Second
@@ -134,16 +149,159 @@ func (a *App) ListProfiles() ([]ProfileSummary, error) {
 	return summaries, nil
 }
 
-// CreateProfile creates a new profile with a single Postgres service using
-// sensible defaults (Phase 1 MVP scope is Postgres-only). The host port
-// defaults to 5432 but is bumped past any port already used by another
-// Stackyard-managed service, per nextFreeHostPort. This is NOT real
-// port-conflict detection (see CheckProfilePortConflict/SuggestFreePort for
-// that) — it only avoids colliding with another Stackyard-managed profile.
-func (a *App) CreateProfile(name string) (*ProfileSummary, error) {
+// ServiceRequest is one engine instance the caller wants CreateProfile to
+// provision within a new profile. HostPort is optional: 0 means "assign this
+// engine's own OS-standard default port" (Postgres 5432, MySQL 3306, MongoDB
+// 27017, Redis 6379), bumped past whatever's already recorded for another
+// Stackyard-managed service — see assignHostPorts. Image tag and credentials
+// are not caller-configurable here; each engine gets the same kind of
+// sensible built-in default CreateProfile has always given Postgres (see
+// defaultsForEngine), consistent with spec.md §3.2's "built-in engine
+// template" 3-click flow.
+type ServiceRequest struct {
+	Engine   storage.Engine
+	HostPort int
+}
+
+// engineDefaults bundles the per-engine built-in defaults CreateProfile
+// applies to a ServiceRequest that doesn't specify them.
+type engineDefaults struct {
+	imageTag string
+	hostPort int
+	username *string
+	password *string
+	dbName   *string
+}
+
+// defaultsForEngine returns the built-in image tag, default host port, and
+// credential defaults for engine, following the exact credential-mapping
+// rules established for each engine's container spec (mysql.go, mongodb.go,
+// redis.go):
+//
+//   - Postgres/MySQL: an explicit username/password/db name, matching
+//     buildPostgresContainerSpec/buildMySQLContainerSpec's expectations.
+//     MySQL's default username is exactly "root" so buildMySQLContainerSpec's
+//     root-vs-regular-user branch takes the root path (only
+//     MYSQL_ROOT_PASSWORD/MYSQL_DATABASE are set).
+//   - MongoDB: username/password default like the other two, but dbName is
+//     left nil — buildMongoContainerSpec omits MONGO_INITDB_DATABASE
+//     entirely when nil rather than defaulting it, per this file's own
+//     package doc comment on why Mongo has no upfront database-name concept.
+//   - Redis: no username, no db name (Redis has neither concept — see
+//     redis.go), and no default password either. A password-less default
+//     keeps Redis's zero-friction "just start it" ethos that redis.go's own
+//     package doc comment establishes as a deliberate, not accidental,
+//     choice; a user who wants an authenticated Redis sets one after
+//     creation.
+func defaultsForEngine(engine storage.Engine) (engineDefaults, error) {
+	switch engine {
+	case storage.EnginePostgres:
+		username, password, dbName := defaultPostgresUsername, defaultPostgresPassword, defaultPostgresDBName
+		return engineDefaults{
+			imageTag: defaultPostgresImageTag,
+			hostPort: defaultPostgresHostPort,
+			username: &username,
+			password: &password,
+			dbName:   &dbName,
+		}, nil
+	case storage.EngineMySQL:
+		username, password, dbName := defaultMySQLUsername, defaultMySQLPassword, defaultMySQLDBName
+		return engineDefaults{
+			imageTag: defaultMySQLImageTag,
+			hostPort: defaultMySQLHostPort,
+			username: &username,
+			password: &password,
+			dbName:   &dbName,
+		}, nil
+	case storage.EngineMongoDB:
+		username, password := defaultMongoUsername, defaultMongoPassword
+		return engineDefaults{
+			imageTag: defaultMongoImageTag,
+			hostPort: defaultMongoHostPort,
+			username: &username,
+			password: &password,
+		}, nil
+	case storage.EngineRedis:
+		return engineDefaults{
+			imageTag: defaultRedisImageTag,
+			hostPort: defaultRedisHostPort,
+		}, nil
+	default:
+		return engineDefaults{}, fmt.Errorf("unsupported engine %q", engine)
+	}
+}
+
+// assignHostPorts resolves the actual host port for every entry in requests,
+// in order: an explicit ServiceRequest.HostPort is honored as-is; a zero
+// HostPort defaults to that request's engine's own OS-standard port (see
+// defaultsForEngine), bumped upward one at a time past any port already in
+// used OR already assigned earlier in this same call. The latter is what
+// keeps two engines from ever colliding on each other's default port within
+// one CreateProfile call, even though today's four engine defaults (5432,
+// 3306, 27017, 6379) never actually overlap with each other — it also
+// protects a future engine addition or an explicit HostPort collision from
+// silently reusing a port. used is read, never mutated.
+func assignHostPorts(used map[int]bool, requests []ServiceRequest) ([]int, error) {
+	taken := make(map[int]bool, len(used)+len(requests))
+	for port := range used {
+		taken[port] = true
+	}
+
+	ports := make([]int, len(requests))
+	for i, req := range requests {
+		port := req.HostPort
+		if port == 0 {
+			defaults, err := defaultsForEngine(req.Engine)
+			if err != nil {
+				return nil, err
+			}
+			port = defaults.hostPort
+		}
+		for taken[port] {
+			port++
+		}
+		taken[port] = true
+		ports[i] = port
+	}
+	return ports, nil
+}
+
+// duplicateEngineError reports an error if requests names the same engine
+// more than once — a profile is a set of at most one service per engine, so
+// e.g. two Postgres services in one CreateProfile call is rejected rather
+// than silently creating both (which would also make assignHostPorts bump
+// the second one to a surprising, unrequested port).
+func duplicateEngineError(requests []ServiceRequest) error {
+	seen := make(map[storage.Engine]bool, len(requests))
+	for _, req := range requests {
+		if seen[req.Engine] {
+			return fmt.Errorf("duplicate engine %q requested — a profile may have at most one service per engine", req.Engine)
+		}
+		seen[req.Engine] = true
+	}
+	return nil
+}
+
+// CreateProfile creates a new profile with one service per entry in
+// services, supporting any combination of 1-4 engines in a single call
+// (spec.md §3.1/§3.2, tasks.md 2.4). Each service gets its engine's built-in
+// image tag and credential defaults (see defaultsForEngine) and a host port
+// resolved by assignHostPorts — either the caller's explicit
+// ServiceRequest.HostPort or that engine's own default port, bumped past
+// anything already recorded for another Stackyard-managed service. This is
+// NOT real port-conflict detection (see CheckProfilePortConflict/
+// SuggestFreePort for that) — it only avoids colliding with another
+// Stackyard-managed profile/service.
+func (a *App) CreateProfile(name string, services []ServiceRequest) (*ProfileSummary, error) {
 	db, err := a.requireDB()
 	if err != nil {
 		return nil, err
+	}
+	if len(services) == 0 {
+		return nil, fmt.Errorf("create profile %q: at least one service is required", name)
+	}
+	if err := duplicateEngineError(services); err != nil {
+		return nil, fmt.Errorf("create profile %q: %w", name, err)
 	}
 
 	profile, err := storage.CreateProfile(db, name)
@@ -151,32 +309,42 @@ func (a *App) CreateProfile(name string) (*ProfileSummary, error) {
 		return nil, fmt.Errorf("create profile %q: %w", name, err)
 	}
 
-	hostPort, err := a.nextFreeHostPort(db, defaultPostgresHostPort)
+	used, err := usedHostPorts(db)
 	if err != nil {
 		return nil, fmt.Errorf("create profile %q: %w", name, err)
 	}
 
-	username := defaultPostgresUsername
-	password := defaultPostgresPassword
-	dbName := defaultPostgresDBName
-
-	svc := &storage.Service{
-		ProfileID:         profile.ID,
-		Engine:            storage.EnginePostgres,
-		ImageTag:          defaultPostgresImageTag,
-		HostPort:          hostPort,
-		Username:          &username,
-		PasswordEncrypted: &password,
-		DBName:            &dbName,
-		VolumeName:        fmt.Sprintf("stackyard-vol-profile-%d-postgres", profile.ID),
-	}
-
-	created, err := storage.CreateService(db, svc)
+	ports, err := assignHostPorts(used, services)
 	if err != nil {
-		return nil, fmt.Errorf("create profile %q: create default postgres service: %w", name, err)
+		return nil, fmt.Errorf("create profile %q: %w", name, err)
 	}
 
-	return &ProfileSummary{Profile: *profile, Services: []storage.Service{*created}}, nil
+	created := make([]storage.Service, 0, len(services))
+	for i, req := range services {
+		defaults, err := defaultsForEngine(req.Engine)
+		if err != nil {
+			return nil, fmt.Errorf("create profile %q: %w", name, err)
+		}
+
+		svc := &storage.Service{
+			ProfileID:         profile.ID,
+			Engine:            req.Engine,
+			ImageTag:          defaults.imageTag,
+			HostPort:          ports[i],
+			Username:          defaults.username,
+			PasswordEncrypted: defaults.password,
+			DBName:            defaults.dbName,
+			VolumeName:        fmt.Sprintf("stackyard-vol-profile-%d-%s", profile.ID, req.Engine),
+		}
+
+		savedSvc, err := storage.CreateService(db, svc)
+		if err != nil {
+			return nil, fmt.Errorf("create profile %q: create %s service: %w", name, req.Engine, err)
+		}
+		created = append(created, *savedSvc)
+	}
+
+	return &ProfileSummary{Profile: *profile, Services: created}, nil
 }
 
 // DuplicateProfile copies an existing profile and all of its services under
@@ -271,9 +439,9 @@ func (a *App) DeleteProfile(profileID int64) error {
 	return nil
 }
 
-// GetConnectionString returns the canonical connection URL for a service.
-// Phase 1 MVP is Postgres-only; calling this for a non-Postgres service
-// returns an error naming the unsupported engine.
+// GetConnectionString returns the canonical connection URL for a service, in
+// its engine's own format (spec.md §3.3), by dispatching to
+// connectionStringForService.
 func (a *App) GetConnectionString(serviceID int64) (string, error) {
 	db, err := a.requireDB()
 	if err != nil {
@@ -285,24 +453,26 @@ func (a *App) GetConnectionString(serviceID int64) (string, error) {
 		return "", fmt.Errorf("get connection string for service %d: %w", serviceID, err)
 	}
 
-	if svc.Engine != storage.EnginePostgres {
-		return "", fmt.Errorf("get connection string for service %d: engine %q is not supported yet", serviceID, svc.Engine)
-	}
-
-	return docker.PostgresConnectionString(*svc), nil
+	return connectionStringForService(*svc)
 }
 
-func (a *App) nextFreeHostPort(db *sql.DB, defaultPort int) (int, error) {
-	used, err := usedHostPorts(db)
-	if err != nil {
-		return 0, err
+// connectionStringForService dispatches to the right
+// internal/docker.<Engine>ConnectionString builder for svc.Engine. Kept as
+// its own function (rather than inlined into GetConnectionString) so the
+// dispatch itself is unit-testable without a database.
+func connectionStringForService(svc storage.Service) (string, error) {
+	switch svc.Engine {
+	case storage.EnginePostgres:
+		return docker.PostgresConnectionString(svc), nil
+	case storage.EngineMySQL:
+		return docker.MySQLConnectionString(svc), nil
+	case storage.EngineMongoDB:
+		return docker.MongoConnectionString(svc), nil
+	case storage.EngineRedis:
+		return docker.RedisConnectionString(svc), nil
+	default:
+		return "", fmt.Errorf("get connection string for service %d: unsupported engine %q", svc.ID, svc.Engine)
 	}
-
-	port := defaultPort
-	for used[port] {
-		port++
-	}
-	return port, nil
 }
 
 func usedHostPorts(db *sql.DB) (map[int]bool, error) {
@@ -419,14 +589,45 @@ func (a *App) checkServicePortConflict(ctx context.Context, dockerClient *docker
 	return info, nil
 }
 
-// StartProfile starts every service in the profile, creating Docker
-// resources (network/volume/container) on first run and reusing/starting
-// them in place otherwise (see internal/docker/compose.go). Phase 1 MVP only
-// understands Postgres services; a non-Postgres service returns an error
-// naming the unsupported engine. Before starting each service, this re-runs
-// the same port-conflict check CheckProfilePortConflict exposes to the
-// frontend, as defense in depth against a stale or skipped frontend
-// pre-check.
+// engineStarters maps each supported storage.Engine to the
+// internal/docker.Client method that starts it (StartPostgresEnvironment,
+// StartMySQLEnvironment, StartMongoEnvironment, StartRedisEnvironment) —
+// this is what lets StartProfile start any combination of the 4 engines in
+// one profile as a unit (tasks.md 2.4), dispatching each service to its own
+// engine's Start<Engine>Environment rather than assuming Postgres.
+//
+// Built from method EXPRESSIONS (`(*docker.Client).StartXEnvironment`), not
+// bound method values — a method expression's function pointer is the same
+// every time it's taken, regardless of receiver, which is what makes
+// engineStarters' contents reflect-comparable in a unit test without ever
+// constructing a live *docker.Client (see app_test.go).
+var engineStarters = map[storage.Engine]func(*docker.Client, context.Context, storage.Service) error{
+	storage.EnginePostgres: (*docker.Client).StartPostgresEnvironment,
+	storage.EngineMySQL:    (*docker.Client).StartMySQLEnvironment,
+	storage.EngineMongoDB:  (*docker.Client).StartMongoEnvironment,
+	storage.EngineRedis:    (*docker.Client).StartRedisEnvironment,
+}
+
+// startServiceEnvironment starts svc's Docker environment by dispatching to
+// its engine's entry in engineStarters. Returns an error naming the engine if
+// svc.Engine isn't one of the 4 supported engines.
+func startServiceEnvironment(ctx context.Context, dockerClient *docker.Client, svc storage.Service) error {
+	starter, ok := engineStarters[svc.Engine]
+	if !ok {
+		return fmt.Errorf("start service %d: unsupported engine %q", svc.ID, svc.Engine)
+	}
+	return starter(dockerClient, ctx, svc)
+}
+
+// StartProfile starts every service in the profile as a single unit,
+// creating Docker resources (network/volume/container) on first run and
+// reusing/starting them in place otherwise (see internal/docker/compose.go
+// and its per-engine counterparts mysql.go/mongodb.go/redis.go), dispatching
+// each service to its own engine via startServiceEnvironment/engineStarters
+// — a profile mixing e.g. Postgres and Redis starts both containers from one
+// call. Before starting each service, this re-runs the same port-conflict
+// check CheckProfilePortConflict exposes to the frontend, as defense in
+// depth against a stale or skipped frontend pre-check.
 func (a *App) StartProfile(profileID int64) error {
 	dockerClient, err := a.requireDocker()
 	if err != nil {
@@ -449,10 +650,6 @@ func (a *App) StartProfile(profileID int64) error {
 	defer cancel()
 
 	for _, svc := range services {
-		if svc.Engine != storage.EnginePostgres {
-			return fmt.Errorf("start profile %d: engine %q is not supported yet", profileID, svc.Engine)
-		}
-
 		conflict, err := a.checkServicePortConflict(ctx, dockerClient, svc)
 		if err != nil {
 			return fmt.Errorf("start profile %d: %w", profileID, err)
@@ -464,7 +661,7 @@ func (a *App) StartProfile(profileID int64) error {
 			return fmt.Errorf("start profile %d: port %d is already in use by another process", profileID, conflict.Port)
 		}
 
-		if err := dockerClient.StartPostgresEnvironment(ctx, svc); err != nil {
+		if err := startServiceEnvironment(ctx, dockerClient, svc); err != nil {
 			return fmt.Errorf("start profile %d: %w", profileID, err)
 		}
 	}

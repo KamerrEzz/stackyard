@@ -13,6 +13,25 @@ import {
 } from '../../../wailsjs/go/main/App'
 import type {main} from '../../../wailsjs/go/models'
 
+type Engine = 'postgres' | 'mysql' | 'mongodb' | 'redis'
+
+interface EngineOption {
+    engine: Engine
+    label: string
+    defaultPort: number
+}
+
+const ENGINE_OPTIONS: EngineOption[] = [
+    {engine: 'postgres', label: 'PostgreSQL', defaultPort: 5432},
+    {engine: 'mysql', label: 'MySQL', defaultPort: 3306},
+    {engine: 'mongodb', label: 'MongoDB', defaultPort: 27017},
+    {engine: 'redis', label: 'Redis', defaultPort: 6379},
+]
+
+function engineLabel(engine: string): string {
+    return ENGINE_OPTIONS.find((option) => option.engine === engine)?.label ?? engine
+}
+
 type ProfileStatus = 'running' | 'stopped' | 'partial' | 'unknown' | 'loading'
 
 interface ProfileRow {
@@ -60,8 +79,15 @@ function EnvironmentManagerView() {
     const [rows, setRows] = useState<ProfileRow[]>([])
     const [listError, setListError] = useState<string | null>(null)
     const [newProfileName, setNewProfileName] = useState('')
+    const [selectedEngines, setSelectedEngines] = useState<Engine[]>([])
     const [creating, setCreating] = useState(false)
     const [createError, setCreateError] = useState<string | null>(null)
+
+    const toggleEngine = useCallback((engine: Engine) => {
+        setSelectedEngines((prev) =>
+            prev.includes(engine) ? prev.filter((e) => e !== engine) : [...prev, engine],
+        )
+    }, [])
 
     const refreshStatus = useCallback(async (profileId: number) => {
         try {
@@ -195,54 +221,79 @@ function EnvironmentManagerView() {
 
     const handleCreateAndStart = useCallback(async () => {
         const name = newProfileName.trim()
-        if (!name) {
+        if (!name || selectedEngines.length === 0) {
             return
         }
         setCreating(true)
         setCreateError(null)
         try {
-            const summary = await CreateProfile(name)
+            const services = selectedEngines.map((engine) => ({Engine: engine, HostPort: 0}))
+            const summary = await CreateProfile(name, services)
             setRows((prev) => [...prev, summaryToRow(summary)])
             setNewProfileName('')
+            setSelectedEngines([])
             await handleStart(summary.Profile.ID)
         } catch (err) {
             setCreateError(String(err))
         } finally {
             setCreating(false)
         }
-    }, [handleStart, newProfileName])
+    }, [handleStart, newProfileName, selectedEngines])
 
     return (
         <div className="flex flex-col gap-6">
             <div>
                 <h1 className="text-xl font-semibold text-ink-100">Environments</h1>
                 <p className="text-sm text-ink-400">
-                    Postgres-only for now — MySQL, MongoDB, and Redis arrive in Phase 2.
+                    Name a profile, pick one or more engines, and start them all as a single unit.
                 </p>
             </div>
 
-            <div className="flex items-end gap-3 rounded border border-ink-800 bg-ink-900/40 p-4">
-                <div className="flex flex-1 flex-col gap-1">
-                    <label htmlFor="new-profile-name" className="text-xs uppercase tracking-widest text-ink-400">
-                        New profile name
-                    </label>
-                    <input
-                        id="new-profile-name"
-                        type="text"
-                        value={newProfileName}
-                        onChange={(e) => setNewProfileName(e.target.value)}
-                        placeholder="e.g. my-side-project"
-                        className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
-                    />
+            <div className="flex flex-col gap-3 rounded border border-ink-800 bg-ink-900/40 p-4">
+                <div className="flex items-end gap-3">
+                    <div className="flex flex-1 flex-col gap-1">
+                        <label htmlFor="new-profile-name" className="text-xs uppercase tracking-widest text-ink-400">
+                            New profile name
+                        </label>
+                        <input
+                            id="new-profile-name"
+                            type="text"
+                            value={newProfileName}
+                            onChange={(e) => setNewProfileName(e.target.value)}
+                            placeholder="e.g. my-side-project"
+                            className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                        />
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => void handleCreateAndStart()}
+                        disabled={creating || newProfileName.trim().length === 0 || selectedEngines.length === 0}
+                        className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        {creating ? 'Creating…' : 'Create & Start'}
+                    </button>
                 </div>
-                <button
-                    type="button"
-                    onClick={() => void handleCreateAndStart()}
-                    disabled={creating || newProfileName.trim().length === 0}
-                    className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                    {creating ? 'Creating…' : 'Create & Start'}
-                </button>
+
+                <div className="flex flex-col gap-1">
+                    <span className="text-xs uppercase tracking-widest text-ink-400">Engines</span>
+                    <div className="flex flex-wrap gap-4">
+                        {ENGINE_OPTIONS.map((option) => (
+                            <label
+                                key={option.engine}
+                                className="flex items-center gap-2 text-sm text-ink-200"
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={selectedEngines.includes(option.engine)}
+                                    onChange={() => toggleEngine(option.engine)}
+                                    className="h-4 w-4 rounded border-ink-700 bg-ink-950 text-brass-500 focus:ring-brass-500"
+                                />
+                                {option.label}
+                                <span className="font-mono text-xs text-ink-500">:{option.defaultPort}</span>
+                            </label>
+                        ))}
+                    </div>
+                </div>
             </div>
             {createError && <p className="text-sm text-red-400">{createError}</p>}
             {listError && <p className="text-sm text-red-400">{listError}</p>}
@@ -278,7 +329,6 @@ interface ProfileCardProps {
 
 function ProfileCard({row, onStart, onStop, onDuplicate, onRename, onDelete}: ProfileCardProps) {
     const {summary, status, busy, error} = row
-    const postgresService = summary.Services.find((s) => s.Engine === 'postgres')
     const [renaming, setRenaming] = useState(false)
     const [nameDraft, setNameDraft] = useState(summary.Profile.Name)
 
@@ -346,17 +396,9 @@ function ProfileCard({row, onStart, onStop, onDuplicate, onRename, onDelete}: Pr
                     ) : (
                         <h2 className="text-sm font-semibold text-ink-100">{summary.Profile.Name}</h2>
                     )}
-                    {postgresService && (
-                        <p className="font-mono text-xs text-ink-400">
-                            postgres · localhost:{postgresService.HostPort}
-                        </p>
-                    )}
                 </div>
                 <div className="flex items-center gap-3">
                     <span className={`text-xs font-medium ${statusColor(status)}`}>{statusLabel(status)}</span>
-                    {status === 'running' && postgresService && (
-                        <CopyConnectionStringButton serviceId={postgresService.ID} />
-                    )}
                     <button
                         type="button"
                         onClick={onStart}
@@ -399,6 +441,16 @@ function ProfileCard({row, onStart, onStop, onDuplicate, onRename, onDelete}: Pr
                         Delete
                     </button>
                 </div>
+            </div>
+            <div className="flex flex-col gap-1">
+                {summary.Services.map((service) => (
+                    <div key={service.ID} className="flex items-center justify-between gap-3">
+                        <p className="font-mono text-xs text-ink-400">
+                            {engineLabel(service.Engine)} · localhost:{service.HostPort}
+                        </p>
+                        {status === 'running' && <CopyConnectionStringButton serviceId={service.ID} />}
+                    </div>
+                ))}
             </div>
             {error && <p className="text-xs text-red-400">{error}</p>}
         </div>

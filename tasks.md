@@ -47,17 +47,17 @@ regardless of whether a task fully closes.
 
 ## Phase 2 — Environment Manager, Full
 
-- [ ] **2.1** Extend `Service` config + container creation for MySQL.
-- [ ] **2.2** Extend for MongoDB.
-- [ ] **2.3** Extend for Redis.
-- [ ] **2.4** Profile creation wizard supporting any combination of the 4
+- [x] **2.1** Extend `Service` config + container creation for MySQL.
+- [x] **2.2** Extend for MongoDB.
+- [x] **2.3** Extend for Redis.
+- [x] **2.4** Profile creation wizard supporting any combination of the 4
       engines in one profile (multi-service start/stop as a unit).
-- [ ] **2.5** Profile duplicate/rename/delete in the UI, backed by 1.2's
+- [x] **2.5** Profile duplicate/rename/delete in the UI, backed by 1.2's
       persistence layer.
 - [ ] **2.6** "Reset volume" for a single service: stop → remove volume →
       leave recreated fresh on next start; explicit confirmation dialog;
       verify sibling services in the same profile stay running throughout.
-- [ ] **2.7** `internal/docker/stats.go`: poll CPU/RAM per container via
+- [x] **2.7** `internal/docker/stats.go`: poll CPU/RAM per container via
       the Docker stats API.
 - [ ] **2.8** Real-time status dashboard: all profiles/services, state,
       port, CPU/RAM, refreshed via Wails events (not frontend polling);

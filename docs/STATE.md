@@ -595,3 +595,70 @@ still no automated guard against this, just this note.
   block the batch or get silently dropped from the map; task 2.8's
   dashboard can tell "this service errored" apart from "this service was
   never requested," which a silently-omitted entry would obscure.
+
+---
+
+## Session 3 continued — Multi-engine profile wizard (2.4)
+
+`CreateProfile` now accepts `(name string, services []ServiceRequest)`
+where `ServiceRequest{Engine storage.Engine, HostPort int}` (`HostPort: 0`
+means auto-default) — supports any combination of 1-4 engines in one
+profile, rejecting empty lists and duplicate engines in the same call (not
+explicitly required by spec.md, but implied by "any combination of the 4
+engines" — a profile isn't specified to need two Postgres services).
+
+**Start/stop/status dispatch across heterogeneous services**: a
+`map[storage.Engine]func(*docker.Client, context.Context, storage.Service) error`
+built from Go method expressions (`(*docker.Client).StartPostgresEnvironment`
+etc., not bound method values) so the dispatch table is reflect-comparable
+and unit-testable without a live Docker client. `StartProfile` loops a
+profile's services and starts each through this table — a profile mixing
+e.g. Postgres+Redis starts/stops both as a unit from one click.
+`StopProfile`/`GetProfileStatus` needed no changes — they were already
+container-name-only, hence already engine-agnostic. `GetConnectionString`
+now dispatches to the right `<Engine>ConnectionString` builder (was
+Postgres-only before this task).
+
+**Default port assignment**: each engine gets its OS-standard default
+(Postgres 5432, MySQL 3306, MongoDB 27017, Redis 6379) via
+`assignHostPorts`, a pure/DB-free function, bumping past any port already
+recorded by another Stackyard-managed service (same self-collision-avoidance
+philosophy as task 1.4's original `nextFreeHostPort`, extended to 4 base
+ports instead of 1). An explicit `HostPort` in a `ServiceRequest` is
+honored as-is.
+
+**Per-engine defaults for MySQL/MongoDB/Redis follow the patterns their
+own tasks (2.1/2.2/2.3) already established**, not new decisions: MySQL
+and MongoDB get explicit default usernames/passwords (root, explicit
+password), matching Postgres's existing explicit-credentials default;
+Redis stays password-nil by default (the "zero-friction local dev"
+behavior `redis.go`'s doc comment already documents as intentional, not
+an oversight — a user can add a password after creation); Mongo's
+`DBName` stays nil by default, matching `mongodb.go`'s "omit entirely,
+don't default" `MONGO_INITDB_DATABASE` behavior.
+
+**Create & Start stayed one combined button** (not split into separate
+Create/Start steps) — preserves the exact UX pattern the task 1.7 manual
+pass already validated and timed.
+
+**New file `internal/docker/cleanup.go`**: `RemoveContainer`/`RemoveVolume`/
+`RemoveNetwork` on `*docker.Client`. Added because the new multi-engine
+integration test needed real teardown capability a package-`main` test
+can't get by reaching into `docker.Client`'s unexported `cli` field the
+way same-package (`internal/docker`) integration tests do. This is also
+exactly the primitive task 2.6 ("Reset volume") will need — that task
+should reuse `RemoveVolume` rather than reimplementing it.
+
+**Test-ID note**: the new `profile_multiengine_integration_test.go` uses
+999006/999007 — next new integration test file should use 999008+ (see
+the running note on this earlier in this document; still no automated
+guard against collisions, just this convention).
+
+**Manual verification note**: `wails dev` was launched for real (native
+window opened, both dev servers responded), but no browser-automation
+tool was available to this particular subagent invocation, so the wizard
+UI itself was not click-tested this round — confirmed instead via a
+throwaway Go program that the real app-data SQLite DB has zero leaked
+profiles from this session. The actual wizard UI click-through should
+still get a manual pass before Phase 2 is considered fully closed,
+similar to task 1.7's pass for Phase 1.

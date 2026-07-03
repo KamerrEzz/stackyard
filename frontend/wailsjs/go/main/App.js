@@ -10,8 +10,8 @@ export function CheckProfilePortConflict(arg1) {
   return window['go']['main']['App']['CheckProfilePortConflict'](arg1);
 }
 
-export function CreateProfile(arg1) {
-  return window['go']['main']['App']['CreateProfile'](arg1);
+export function CreateProfile(arg1, arg2) {
+  return window['go']['main']['App']['CreateProfile'](arg1, arg2);
 }
 
 export function DeleteProfile(arg1) {

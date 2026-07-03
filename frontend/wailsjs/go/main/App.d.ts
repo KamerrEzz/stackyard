@@ -6,7 +6,7 @@ export function CheckPortAvailable(arg1:number):Promise<boolean>;
 
 export function CheckProfilePortConflict(arg1:number):Promise<main.PortConflictInfo>;
 
-export function CreateProfile(arg1:string):Promise<main.ProfileSummary>;
+export function CreateProfile(arg1:string,arg2:Array<main.ServiceRequest>):Promise<main.ProfileSummary>;
 
 export function DeleteProfile(arg1:number):Promise<void>;
 

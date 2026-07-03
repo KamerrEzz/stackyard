@@ -48,6 +48,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ServiceRequest {
+	    Engine: string;
+	    HostPort: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServiceRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Engine = source["Engine"];
+	        this.HostPort = source["HostPort"];
+	    }
+	}
 
 }
 
