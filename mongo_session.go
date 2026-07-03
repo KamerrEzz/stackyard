@@ -8,10 +8,18 @@ import (
 	"strings"
 
 	dbenginemongo "stackyard/internal/dbengine/mongo"
+	"stackyard/internal/diagram"
 	"stackyard/internal/storage"
 
 	"github.com/google/uuid"
 )
+
+// defaultMongoSampleSize is the sample size SampleMongoDocuments and
+// BuildMongoStructureDiagram fall back to when the caller requests n <= 0,
+// satisfying spec.md §4.11's "N configurable, with a sensible default"
+// requirement at the Go layer, not only via the frontend's own input
+// default (tasks.md 5.6).
+const defaultMongoSampleSize = 100
 
 // buildMongoConnectionURI translates fields into a "mongodb://" connection
 // string, the same way buildPostgresTestConnString translates
@@ -291,4 +299,80 @@ func (a *App) DeleteMongoDocuments(sessionID string, database string, collection
 		return fmt.Errorf("delete mongo documents: %w", err)
 	}
 	return nil
+}
+
+// SampleMongoDocuments returns up to n randomly sampled documents from
+// collection via the live Mongo session behind sessionID (see
+// OpenMongoConnection) — the raw sampling primitive the Mongo Schema
+// Diagram feature (tasks.md 5.6, spec.md §4.11) is built from.
+// BuildMongoStructureDiagram below is the single call the frontend's Mongo
+// schema-diagram view actually needs for rendering; this method is exposed
+// separately since the sampling primitive is independently useful (e.g. a
+// future "preview a few raw sample documents" affordance) and mirrors
+// dbenginemongo.Engine.SampleDocuments one-to-one, the same way
+// FindMongoDocuments mirrors FindDocuments. n <= 0 falls back to
+// defaultMongoSampleSize.
+func (a *App) SampleMongoDocuments(sessionID string, database string, collection string, n int) ([]map[string]any, error) {
+	session, ok := a.getMongoSession(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("sample mongo documents: no open mongo session %q", sessionID)
+	}
+	if n <= 0 {
+		n = defaultMongoSampleSize
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, mongoOperationTimeout)
+	defer cancel()
+
+	docs, err := session.engine.SampleDocuments(ctx, database, collection, n)
+	if err != nil {
+		return nil, fmt.Errorf("sample mongo documents: %w", err)
+	}
+	if docs == nil {
+		docs = []map[string]any{}
+	}
+	return docs, nil
+}
+
+// BuildMongoStructureDiagram samples sampleSize documents from every
+// collection in database (via the live Mongo session behind sessionID),
+// infers each collection's shape with diagram.InferCollectionShape, and
+// renders the result as Mermaid erDiagram text via
+// diagram.BuildMongoStructureDiagram (tasks.md 5.6, spec.md §4.11) — the
+// Mongo-side counterpart of BuildSchemaDiagram. Every collection in database
+// is always included, even one whose sample comes back empty (matching
+// diagram.BuildMongoStructureDiagram's own "every collection gets a block"
+// precedent, itself matching BuildRelationalERDiagram's "every table gets a
+// block"). sampleSize <= 0 falls back to defaultMongoSampleSize. This is
+// called once on the frontend view's connect/mount and again on every
+// explicit "Regenerate" click — there is no cached/auto-updating diagram
+// state on the Go side, matching spec.md §4.11's explicit "not a live/
+// auto-updating view" requirement.
+func (a *App) BuildMongoStructureDiagram(sessionID string, database string, sampleSize int) (string, error) {
+	session, ok := a.getMongoSession(sessionID)
+	if !ok {
+		return "", fmt.Errorf("build mongo structure diagram: no open mongo session %q", sessionID)
+	}
+	if sampleSize <= 0 {
+		sampleSize = defaultMongoSampleSize
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, mongoOperationTimeout)
+	defer cancel()
+
+	collections, err := session.engine.ListCollections(ctx, database)
+	if err != nil {
+		return "", fmt.Errorf("build mongo structure diagram: %w", err)
+	}
+
+	shapes := make(map[string]diagram.CollectionShape, len(collections))
+	for _, collection := range collections {
+		docs, err := session.engine.SampleDocuments(ctx, database, collection, sampleSize)
+		if err != nil {
+			return "", fmt.Errorf("build mongo structure diagram: collection %q: %w", collection, err)
+		}
+		shapes[collection] = diagram.InferCollectionShape(docs)
+	}
+
+	return diagram.BuildMongoStructureDiagram(shapes), nil
 }

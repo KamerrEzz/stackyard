@@ -196,6 +196,9 @@ type mongoSession struct {
 // implement it either — see mongo.go's own package doc comment for why
 // MongoDB gets no relational Engine implementation at all; mongoEngine is a
 // separate, narrower contract scoped to exactly what app.go needs.
+// SampleDocuments was added for tasks.md 5.6 (Schema Diagram — MongoDB
+// inferred structure): SampleMongoDocuments/BuildMongoStructureDiagram in
+// mongo_session.go both call through it.
 // Connect/Ping are deliberately excluded: OpenMongoConnection calls them on
 // the concrete *dbenginemongo.Engine before ever storing it in a
 // mongoSession, so nothing past that point needs them.
@@ -208,6 +211,7 @@ type mongoEngine interface {
 	InsertDocument(ctx context.Context, database, collection string, doc map[string]any) (map[string]any, error)
 	UpdateDocument(ctx context.Context, database, collection, id string, doc map[string]any) error
 	DeleteDocuments(ctx context.Context, database, collection string, ids []string) error
+	SampleDocuments(ctx context.Context, database, collection string, n int) ([]map[string]any, error)
 }
 
 var _ mongoEngine = (*dbenginemongo.Engine)(nil)

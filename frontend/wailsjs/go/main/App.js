@@ -6,6 +6,10 @@ export function BrowseTableRows(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['BrowseTableRows'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function BuildMongoStructureDiagram(arg1, arg2, arg3) {
+  return window['go']['main']['App']['BuildMongoStructureDiagram'](arg1, arg2, arg3);
+}
+
 export function BuildSchemaDiagram(arg1, arg2) {
   return window['go']['main']['App']['BuildSchemaDiagram'](arg1, arg2);
 }
@@ -164,6 +168,10 @@ export function RunMultiStatementQuery(arg1, arg2) {
 
 export function RunQuery(arg1, arg2) {
   return window['go']['main']['App']['RunQuery'](arg1, arg2);
+}
+
+export function SampleMongoDocuments(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SampleMongoDocuments'](arg1, arg2, arg3, arg4);
 }
 
 export function SaveConnection(arg1, arg2) {

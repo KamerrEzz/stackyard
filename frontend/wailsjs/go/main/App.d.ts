@@ -6,6 +6,8 @@ import {storage} from '../models';
 
 export function BrowseTableRows(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<dbengine.QueryResult>;
 
+export function BuildMongoStructureDiagram(arg1:string,arg2:string,arg3:number):Promise<string>;
+
 export function BuildSchemaDiagram(arg1:string,arg2:string):Promise<string>;
 
 export function CancelQuery(arg1:string):Promise<void>;
@@ -85,6 +87,8 @@ export function RestartProfile(arg1:number):Promise<void>;
 export function RunMultiStatementQuery(arg1:string,arg2:string):Promise<Array<dbengine.StatementResult>>;
 
 export function RunQuery(arg1:string,arg2:string):Promise<dbengine.QueryResult>;
+
+export function SampleMongoDocuments(arg1:string,arg2:string,arg3:string,arg4:number):Promise<Array<Record<string, any>>>;
 
 export function SaveConnection(arg1:main.ConnectionFormFields,arg2:string):Promise<storage.Connection>;
 

@@ -121,15 +121,15 @@ code surface with the editable-grid work above.
 
 - [x] **5.1** Implement `Engine` for MongoDB (official `mongo-go-driver`);
       map its query model onto the existing tab/connection shell.
-- [ ] **5.2** Document tree/JSON viewer component (expand/collapse nested
+- [x] **5.2** Document tree/JSON viewer component (expand/collapse nested
       objects and arrays, typed scalar rendering).
-- [ ] **5.3** In-place document editing with JSON-structure validation
+- [x] **5.3** In-place document editing with JSON-structure validation
       before save.
-- [ ] **5.4** New document creation (blank `{}` or duplicate-selected) and
+- [x] **5.4** New document creation (blank `{}` or duplicate-selected) and
       delete-with-confirmation.
 - [ ] **5.5** Collection browser (list collections, basic find/filter bar)
       wired into the multi-tab shell.
-- [ ] **5.6** Schema Diagram — MongoDB inferred structure: sample N
+- [x] **5.6** Schema Diagram — MongoDB inferred structure: sample N
       documents per collection, infer shape, render reusing Phase 4.5's
       Mermaid component with the visual "inferred, not an enforced
       relationship" label.

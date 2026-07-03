@@ -1980,3 +1980,102 @@ write, so this works without any container-config change.
 Test ID used: **999021** (port 27019) — next free integration-test ID is
 **999022+**; grep `9990\d\d` across the whole repo before picking, this
 convention has drifted multiple times already this project.
+
+---
+
+## Session 9 — Document viewer/editing (5.2-5.4) and MongoDB Schema Diagram (5.6)
+
+Ran in parallel, genuinely disjoint code surfaces as planned. Both
+landed clean; full `go build/vet/gofmt/test`, `-tags=integration`,
+`pnpm run build`, `pnpm run test` (141/141 Vitest) all green. Cleaned up
+real Docker leftovers (4 orphaned Postgres containers/networks/volumes
+from manual verification, profile IDs 7-10) and a stray log file — zero
+rows in the real app-data SQLite DB confirmed after.
+
+### Document viewer/editing (5.2-5.4) — `MongoDocumentTree.tsx`/`MongoJSONEditor.tsx`/`MongoDocumentView.tsx`
+
+- **Unified tab strip, not a parallel Mongo tab list** — this is a
+  better choice than the architecture note I originally suggested when
+  dispatching this task. `DbClientTab` became a discriminated union
+  (`SqlTab | MongoTab`); `TabBar`/`tabState.ts`'s `openTab`/`closeTab`
+  needed ZERO changes since both were already engine-agnostic (only
+  `id`/`label`). Matches spec.md goal 2 ("single, coherent UI — no
+  per-engine tool switching") more directly than a second tab strip
+  would have.
+- **Whole-document JSON editing, not per-leaf** — simpler, satisfies
+  spec.md §4.4 literally, and mirrors `ResultsGrid`'s own choice of
+  plain inputs over a richer editor for structured data.
+- **ObjectID/date display heuristic** (not a guarantee, since BSON→JSON
+  conversion is one-way): exact 24-hex-char string → `objectid`;
+  RFC3339-shaped string → `date` (matches `convert.go`'s exact output
+  format).
+- Duplicate-of-selected is per-document-card ("Duplicate" button
+  pre-fills the create panel with `_id` stripped); delete confirmation
+  is `window.confirm` per-document, no multi-select — a documented
+  simplification since spec.md §4.4 doesn't require task 4.3's
+  multi-row nuance.
+- **Real bug found and fixed via manual verification**: React 18
+  StrictMode's dev-only double-invoke of effects (mount→cleanup→mount)
+  closed the Mongo session immediately after it opened, since the
+  session was opened eagerly in `DbClientView` but only closed in
+  `MongoDocumentView`'s unmount effect — the "real" mount then tried to
+  list databases against an already-closed session. Fixed by having
+  `MongoDocumentView` open AND close its own session within one effect
+  (StrictMode's synthetic cycle opens/closes a throwaway session, the
+  real mount opens a fresh one that's what actually gets closed on real
+  unmount) — the same pattern that already made `QueryEditor`
+  StrictMode-safe from an earlier task, just adapted for Mongo's eager
+  (not lazy) session-opening need.
+
+### MongoDB Schema Diagram (5.6) — `internal/diagram/mongo.go`
+
+- **Type variance across a sample: list every observed kind, not
+  "mixed."** A field that's a string in some documents and an int in
+  others reports `Kinds = [int, string]`, rendered as `int_or_string`.
+  Deliberate pedagogical choice (per spec.md §4.11's own framing of this
+  feature as teaching-oriented): "mixed" hides exactly the disagreement
+  a student should see; listing every kind teaches from it directly.
+  Optionality (absent from some sampled docs) and explicit `null` are
+  tracked as two distinct, non-conflated signals.
+- Nested objects flatten into the same Mermaid entity block with a
+  dotted-then-underscored attribute prefix (`address.street` →
+  `address_street`) since `erDiagram` has no native nested-attribute
+  syntax. Arrays report aggregate element-kind(s); array-of-objects
+  recurses the same way a plain object field would.
+- **Heuristic relationship detection (e.g. `xId`/`xId` fields implying a
+  reference to another collection) was deliberately skipped** — judged
+  to add real complexity/false-positive risk for a first pass. An
+  acknowledged, explicit stretch goal, not an oversight.
+- The exact phrase **"Inferred structure - not an enforced
+  relationship"** is baked directly into the generated Mermaid text as
+  a `%%` comment banner (survives into the raw copyable export, not just
+  an on-screen badge) — plus the on-screen badge via
+  `MermaidDiagram.tsx`'s pre-existing `badge` prop (added in task 4.5.3
+  in anticipation of this). No PK/FK markers are ever emitted for Mongo
+  attributes, avoiding any visual implication of enforced-constraint
+  semantics that don't exist in a document store.
+- A dedicated `mongoFieldToken` (not the relational diagram's
+  `mermaidToken`) sanitizes attribute names, specifically because
+  `mermaidToken` trims leading/trailing underscores — which would
+  silently rename `_id`/`__v` to `id`/`v`, wrong for Mongo's actual
+  field names.
+- Verified twice, matching the relational diagram's own precedent:
+  exact-string Go tests, AND the generated text fed through Mermaid's
+  real `mermaid.parse()` in Node (confirmed parses cleanly, including
+  the leading-underscore-attribute case specifically).
+- Small necessary touch outside the literal file boundary: `app.go`
+  gained the `SampleDocuments` method on the `mongoEngine` interface (4
+  lines) — required for `mongo_session.go`'s new bound methods to
+  compile, since the interface is declared in `app.go`, not
+  `mongo_session.go`. Flagged explicitly by the agent rather than done
+  silently; judged acceptable (interface addition only, no logic moved).
+
+### Remaining Phase 5 work
+
+Task 5.5 ("Collection browser... basic find/filter bar") is MOSTLY
+already satisfied by the document viewer above (database/collection
+listing, selection, and paginated browsing are all built and wired into
+the unified tab shell) — only the actual filter-bar UI is missing
+(`FindMongoDocuments` is currently always called with an empty filter
+string). A small, tightly-scoped follow-up task is adding just that
+piece.

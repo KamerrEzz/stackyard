@@ -1,77 +1,125 @@
 import {useCallback, useEffect, useRef, useState} from 'react'
 import {
+    BuildMongoStructureDiagram,
     BuildSchemaDiagram,
     CloseConnectionSession,
+    CloseMongoSession,
+    ListMongoDatabases,
     ListSchemasForSession,
     OpenConnection,
+    OpenMongoConnection,
     ParseConnectionURL,
 } from '../../../wailsjs/go/main/App'
 import type {main} from '../../../wailsjs/go/models'
 import MermaidDiagram from './MermaidDiagram'
 
-type RelationalEngine = 'postgres' | 'mysql'
+type SchemaDiagramEngine = 'postgres' | 'mysql' | 'mongodb'
 
 interface EngineOption {
-    engine: RelationalEngine
+    engine: SchemaDiagramEngine
     label: string
     defaultPort: number
+    namespaceLabel: string
 }
 
 const ENGINE_OPTIONS: EngineOption[] = [
-    {engine: 'postgres', label: 'PostgreSQL', defaultPort: 5432},
-    {engine: 'mysql', label: 'MySQL', defaultPort: 3306},
+    {engine: 'postgres', label: 'PostgreSQL', defaultPort: 5432, namespaceLabel: 'Schema'},
+    {engine: 'mysql', label: 'MySQL', defaultPort: 3306, namespaceLabel: 'Schema'},
+    {engine: 'mongodb', label: 'MongoDB', defaultPort: 27017, namespaceLabel: 'Database'},
 ]
+
+/**
+ * Default document sample size the Mongo structure diagram uses when the
+ * user hasn't changed the "Sample size" input, mirroring
+ * `defaultMongoSampleSize` on the Go side (mongo_session.go) — spec.md
+ * §4.11's "N configurable, with a sensible default" requirement.
+ */
+const DEFAULT_MONGO_SAMPLE_SIZE = 100
+
+/**
+ * The exact label spec.md §4.11 requires be visible on every MongoDB
+ * structure diagram, distinguishing it at a glance from the relational ER
+ * diagram: MongoDB has no real foreign keys, so this diagram is a sampled
+ * inference, never an enforced schema.
+ */
+const MONGO_INFERRED_STRUCTURE_BADGE = 'Inferred structure — not an enforced relationship'
 
 type ConnectState = 'idle' | 'connecting' | 'connected' | 'error'
 type DiagramState = 'idle' | 'generating' | 'ready' | 'error'
 
+function isMongoEngine(engine: SchemaDiagramEngine): engine is 'mongodb' {
+    return engine === 'mongodb'
+}
+
+function namespaceLabelFor(engine: SchemaDiagramEngine): string {
+    return ENGINE_OPTIONS.find((option) => option.engine === engine)?.namespaceLabel ?? 'Schema'
+}
+
 /**
- * Top-level view for the relational schema-diagram feature (spec.md §4.11,
- * tasks.md 4.5): connects to a Postgres/MySQL database independently of the
- * main DB Client's tabs (a separate `OpenConnection` session, not a shared
- * one — this view shares no state with `db-client/QueryEditor.tsx`, matching
- * tasks.md's note that this feature "shares no code surface" with the rest
- * of Phase 4), lets the user pick which schema/database to diagram, and
- * renders it via `MermaidDiagram`. Generation only ever happens on an
- * explicit user action — connecting, changing the schema, or clicking
- * "Regenerate" — never automatically on a timer or file watch (spec.md
- * §4.11's explicit "not a live/auto-updating view" requirement).
+ * Top-level view for the schema-diagram feature (spec.md §4.11, tasks.md
+ * 4.5/5.6): connects to a Postgres/MySQL/MongoDB database independently of
+ * the main DB Client's tabs (a separate session, not a shared one — this
+ * view shares no state with `db-client/QueryEditor.tsx`), lets the user pick
+ * which schema (relational) or database (MongoDB) to diagram, and renders it
+ * via `MermaidDiagram`. Generation only ever happens on an explicit user
+ * action — connecting, changing the namespace, or clicking "Regenerate" —
+ * never automatically on a timer or file watch (spec.md §4.11's explicit
+ * "not a live/auto-updating view" requirement).
+ *
+ * PostgreSQL/MySQL render a live `erDiagram` from real tables/columns/
+ * foreign keys (`BuildSchemaDiagram`). MongoDB has no foreign keys to
+ * introspect at all, so its diagram instead samples `sampleSize` documents
+ * per collection and infers a shape from them (`BuildMongoStructureDiagram`,
+ * tasks.md 5.6) — `MONGO_INFERRED_STRUCTURE_BADGE` is passed to
+ * `MermaidDiagram` specifically so this distinction is visible on-screen
+ * for every Mongo diagram, not just documented here.
  */
 function SchemaDiagramView() {
     const [pasteValue, setPasteValue] = useState('')
     const [parseError, setParseError] = useState<string | null>(null)
 
-    const [engine, setEngine] = useState<RelationalEngine>('postgres')
+    const [engine, setEngine] = useState<SchemaDiagramEngine>('postgres')
     const [host, setHost] = useState('')
     const [port, setPort] = useState('')
     const [username, setUsername] = useState('')
     const [password, setPassword] = useState('')
     const [database, setDatabase] = useState('')
+    const [sampleSize, setSampleSize] = useState(String(DEFAULT_MONGO_SAMPLE_SIZE))
 
     const [connectState, setConnectState] = useState<ConnectState>('idle')
     const [connectError, setConnectError] = useState<string | null>(null)
 
-    const [schemas, setSchemas] = useState<string[]>([])
-    const [selectedSchema, setSelectedSchema] = useState('')
+    const [namespaces, setNamespaces] = useState<string[]>([])
+    const [selectedNamespace, setSelectedNamespace] = useState('')
 
     const [diagramState, setDiagramState] = useState<DiagramState>('idle')
     const [diagramError, setDiagramError] = useState<string | null>(null)
     const [mermaidText, setMermaidText] = useState('')
 
     const sessionIdRef = useRef<string | null>(null)
+    const sessionEngineRef = useRef<SchemaDiagramEngine | null>(null)
+
+    const closeSession = useCallback((sessionId: string, sessionEngine: SchemaDiagramEngine) => {
+        if (isMongoEngine(sessionEngine)) {
+            void CloseMongoSession(sessionId)
+        } else {
+            void CloseConnectionSession(sessionId)
+        }
+    }, [])
 
     useEffect(() => {
         return () => {
             const sessionId = sessionIdRef.current
-            if (sessionId) {
-                void CloseConnectionSession(sessionId)
+            const sessionEngine = sessionEngineRef.current
+            if (sessionId && sessionEngine) {
+                closeSession(sessionId, sessionEngine)
             }
         }
-    }, [])
+    }, [closeSession])
 
     const applyParsedFields = useCallback((fields: main.ConnectionFormFields) => {
-        if (fields.Engine !== 'postgres' && fields.Engine !== 'mysql') {
-            setParseError(`Schema diagrams support PostgreSQL and MySQL only, got "${fields.Engine}"`)
+        if (fields.Engine !== 'postgres' && fields.Engine !== 'mysql' && fields.Engine !== 'mongodb') {
+            setParseError(`Schema diagrams support PostgreSQL, MySQL, and MongoDB only, got "${fields.Engine}"`)
             return
         }
         setParseError(null)
@@ -97,29 +145,35 @@ function SchemaDiagramView() {
         }
     }, [applyParsedFields, pasteValue])
 
-    const generateDiagram = useCallback(async (sessionId: string, schema: string) => {
-        setDiagramState('generating')
-        setDiagramError(null)
-        try {
-            const text = await BuildSchemaDiagram(sessionId, schema)
-            setMermaidText(text)
-            setDiagramState('ready')
-        } catch (err) {
-            setDiagramError(String(err))
-            setDiagramState('error')
-        }
-    }, [])
+    const generateDiagram = useCallback(
+        async (sessionId: string, sessionEngine: SchemaDiagramEngine, namespace: string) => {
+            setDiagramState('generating')
+            setDiagramError(null)
+            try {
+                const text = isMongoEngine(sessionEngine)
+                    ? await BuildMongoStructureDiagram(sessionId, namespace, Number(sampleSize) || 0)
+                    : await BuildSchemaDiagram(sessionId, namespace)
+                setMermaidText(text)
+                setDiagramState('ready')
+            } catch (err) {
+                setDiagramError(String(err))
+                setDiagramState('error')
+            }
+        },
+        [sampleSize],
+    )
 
     const handleConnect = useCallback(async () => {
         setConnectState('connecting')
         setConnectError(null)
-        setSchemas([])
+        setNamespaces([])
         setMermaidText('')
         setDiagramState('idle')
 
-        if (sessionIdRef.current) {
-            void CloseConnectionSession(sessionIdRef.current)
+        if (sessionIdRef.current && sessionEngineRef.current) {
+            closeSession(sessionIdRef.current, sessionEngineRef.current)
             sessionIdRef.current = null
+            sessionEngineRef.current = null
         }
 
         const fields: main.ConnectionFormFields = {
@@ -134,30 +188,34 @@ function SchemaDiagramView() {
         }
 
         try {
-            const sessionId = await OpenConnection(fields)
+            const sessionId = isMongoEngine(engine) ? await OpenMongoConnection(fields) : await OpenConnection(fields)
             sessionIdRef.current = sessionId
+            sessionEngineRef.current = engine
 
-            const availableSchemas = await ListSchemasForSession(sessionId)
-            setSchemas(availableSchemas)
+            const availableNamespaces = isMongoEngine(engine)
+                ? await ListMongoDatabases(sessionId)
+                : await ListSchemasForSession(sessionId)
+            setNamespaces(availableNamespaces)
             setConnectState('connected')
 
-            const firstSchema = availableSchemas[0] ?? ''
-            setSelectedSchema(firstSchema)
-            if (firstSchema) {
-                await generateDiagram(sessionId, firstSchema)
+            const firstNamespace = availableNamespaces[0] ?? ''
+            setSelectedNamespace(firstNamespace)
+            if (firstNamespace) {
+                await generateDiagram(sessionId, engine, firstNamespace)
             }
         } catch (err) {
             setConnectState('error')
             setConnectError(String(err))
         }
-    }, [database, engine, generateDiagram, host, password, port, username])
+    }, [closeSession, database, engine, generateDiagram, host, password, port, username])
 
-    const handleSchemaChange = useCallback(
-        async (schema: string) => {
-            setSelectedSchema(schema)
+    const handleNamespaceChange = useCallback(
+        async (namespace: string) => {
+            setSelectedNamespace(namespace)
             const sessionId = sessionIdRef.current
-            if (sessionId && schema) {
-                await generateDiagram(sessionId, schema)
+            const sessionEngine = sessionEngineRef.current
+            if (sessionId && sessionEngine && namespace) {
+                await generateDiagram(sessionId, sessionEngine, namespace)
             }
         },
         [generateDiagram],
@@ -165,20 +223,23 @@ function SchemaDiagramView() {
 
     const handleRegenerate = useCallback(async () => {
         const sessionId = sessionIdRef.current
-        if (sessionId && selectedSchema) {
-            await generateDiagram(sessionId, selectedSchema)
+        const sessionEngine = sessionEngineRef.current
+        if (sessionId && sessionEngine && selectedNamespace) {
+            await generateDiagram(sessionId, sessionEngine, selectedNamespace)
         }
-    }, [generateDiagram, selectedSchema])
+    }, [generateDiagram, selectedNamespace])
 
     const isConnected = connectState === 'connected'
+    const isMongo = isMongoEngine(engine)
 
     return (
         <div className="flex flex-col gap-6">
             <div>
                 <h1 className="text-xl font-semibold text-ink-100">Schema Diagram</h1>
                 <p className="text-sm text-ink-400">
-                    Connect to a PostgreSQL or MySQL database to generate a live entity-relationship diagram from its
-                    real tables, columns, and foreign keys.
+                    Connect to a PostgreSQL, MySQL, or MongoDB database to generate a diagram: a live
+                    entity-relationship diagram from real tables/columns/foreign keys for PostgreSQL/MySQL, or an
+                    inferred document-structure diagram sampled from real documents for MongoDB.
                 </p>
             </div>
 
@@ -207,7 +268,7 @@ function SchemaDiagramView() {
                         <select
                             id="schema-diagram-engine"
                             value={engine}
-                            onChange={(e) => setEngine(e.target.value as RelationalEngine)}
+                            onChange={(e) => setEngine(e.target.value as SchemaDiagramEngine)}
                             className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
                         >
                             {ENGINE_OPTIONS.map((option) => (
@@ -284,6 +345,26 @@ function SchemaDiagramView() {
                             className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
                         />
                     </div>
+
+                    {isMongo && (
+                        <div className="flex flex-col gap-1">
+                            <label
+                                htmlFor="schema-diagram-sample-size"
+                                className="text-xs uppercase tracking-widest text-ink-400"
+                            >
+                                Sample size (per collection)
+                            </label>
+                            <input
+                                id="schema-diagram-sample-size"
+                                type="number"
+                                min={1}
+                                value={sampleSize}
+                                onChange={(e) => setSampleSize(e.target.value)}
+                                placeholder={String(DEFAULT_MONGO_SAMPLE_SIZE)}
+                                className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
+                            />
+                        </div>
+                    )}
                 </div>
 
                 <div className="flex items-center gap-3 pt-1">
@@ -296,20 +377,23 @@ function SchemaDiagramView() {
                         {connectState === 'connecting' ? 'Connecting…' : 'Connect'}
                     </button>
 
-                    {isConnected && schemas.length > 0 && (
+                    {isConnected && namespaces.length > 0 && (
                         <div className="flex items-center gap-2">
-                            <label htmlFor="schema-diagram-schema-select" className="text-xs uppercase tracking-widest text-ink-400">
-                                Schema
+                            <label
+                                htmlFor="schema-diagram-namespace-select"
+                                className="text-xs uppercase tracking-widest text-ink-400"
+                            >
+                                {namespaceLabelFor(engine)}
                             </label>
                             <select
-                                id="schema-diagram-schema-select"
-                                value={selectedSchema}
-                                onChange={(e) => void handleSchemaChange(e.target.value)}
+                                id="schema-diagram-namespace-select"
+                                value={selectedNamespace}
+                                onChange={(e) => void handleNamespaceChange(e.target.value)}
                                 className="rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-ink-100 outline-none focus:border-brass-500"
                             >
-                                {schemas.map((schema) => (
-                                    <option key={schema} value={schema}>
-                                        {schema}
+                                {namespaces.map((namespace) => (
+                                    <option key={namespace} value={namespace}>
+                                        {namespace}
                                     </option>
                                 ))}
                             </select>
@@ -320,7 +404,7 @@ function SchemaDiagramView() {
                         <button
                             type="button"
                             onClick={() => void handleRegenerate()}
-                            disabled={diagramState === 'generating' || !selectedSchema}
+                            disabled={diagramState === 'generating' || !selectedNamespace}
                             className="rounded border border-ink-700 px-4 py-2 text-sm font-medium text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             {diagramState === 'generating' ? 'Regenerating…' : 'Regenerate'}
@@ -336,12 +420,17 @@ function SchemaDiagramView() {
             )}
 
             {diagramState === 'ready' && mermaidText && (
-                <MermaidDiagram source={mermaidText} schemaName={selectedSchema} />
+                <MermaidDiagram
+                    source={mermaidText}
+                    schemaName={selectedNamespace}
+                    badge={isMongo ? MONGO_INFERRED_STRUCTURE_BADGE : undefined}
+                />
             )}
 
-            {isConnected && schemas.length === 0 && (
+            {isConnected && namespaces.length === 0 && (
                 <p className="text-sm text-ink-500">
-                    Connected, but no user schemas were found — create a table first, then Regenerate.
+                    Connected, but no {namespaceLabelFor(engine).toLowerCase()}s were found — create one first, then
+                    Regenerate.
                 </p>
             )}
         </div>

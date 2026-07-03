@@ -13,9 +13,10 @@ import (
 // fakeMongoEngine is a mongoEngine test double used to exercise
 // OpenMongoConnection/CloseMongoSession/ListMongoDatabases/
 // ListMongoCollections/FindMongoDocuments/CountMongoDocuments/
-// InsertMongoDocument/UpdateMongoDocument/DeleteMongoDocuments's session-map
-// bookkeeping without a live MongoDB connection, mirroring
-// query_session_test.go's fakeQueryEngine pattern.
+// InsertMongoDocument/UpdateMongoDocument/DeleteMongoDocuments/
+// SampleMongoDocuments/BuildMongoStructureDiagram's session-map bookkeeping
+// without a live MongoDB connection, mirroring query_session_test.go's
+// fakeQueryEngine pattern.
 type fakeMongoEngine struct {
 	mu     sync.Mutex
 	closed bool
@@ -29,6 +30,7 @@ type fakeMongoEngine struct {
 	insertDocumentFunc  func(ctx context.Context, database, collection string, doc map[string]any) (map[string]any, error)
 	updateDocumentFunc  func(ctx context.Context, database, collection, id string, doc map[string]any) error
 	deleteDocumentsFunc func(ctx context.Context, database, collection string, ids []string) error
+	sampleDocumentsFunc func(ctx context.Context, database, collection string, n int) ([]map[string]any, error)
 }
 
 func (f *fakeMongoEngine) Close() error {
@@ -91,6 +93,13 @@ func (f *fakeMongoEngine) DeleteDocuments(ctx context.Context, database, collect
 		return f.deleteDocumentsFunc(ctx, database, collection, ids)
 	}
 	return nil
+}
+
+func (f *fakeMongoEngine) SampleDocuments(ctx context.Context, database, collection string, n int) ([]map[string]any, error) {
+	if f.sampleDocumentsFunc != nil {
+		return f.sampleDocumentsFunc(ctx, database, collection, n)
+	}
+	return nil, nil
 }
 
 func TestApp_MongoSessionBookkeeping_PutGetDelete(t *testing.T) {
@@ -467,5 +476,156 @@ func TestBuildMongoConnectionURI_OmitsDatabaseWhenBlank(t *testing.T) {
 	want := "mongodb://localhost:27017"
 	if got != want {
 		t.Errorf("buildMongoConnectionURI() = %q, want %q", got, want)
+	}
+}
+
+func TestApp_SampleMongoDocuments_NotFoundSessionReturnsError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+
+	if _, err := a.SampleMongoDocuments("does-not-exist", "mydb", "widgets", 50); err == nil {
+		t.Error("SampleMongoDocuments() with an unknown session ID: expected an error, got nil")
+	} else if !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("SampleMongoDocuments() error = %q, want it to name the missing session ID", err.Error())
+	}
+}
+
+func TestApp_SampleMongoDocuments_PassesNThrough(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	var gotN int
+	engine := &fakeMongoEngine{
+		sampleDocumentsFunc: func(ctx context.Context, database, collection string, n int) ([]map[string]any, error) {
+			gotN = n
+			return []map[string]any{{"name": "bolt"}}, nil
+		},
+	}
+	a.putMongoSession("session-1", &mongoSession{engine: engine})
+
+	got, err := a.SampleMongoDocuments("session-1", "mydb", "widgets", 25)
+	if err != nil {
+		t.Fatalf("SampleMongoDocuments() failed: %v", err)
+	}
+	if gotN != 25 {
+		t.Errorf("engine.SampleDocuments() received n=%d, want 25", gotN)
+	}
+	if len(got) != 1 {
+		t.Errorf("SampleMongoDocuments() = %v, want the fake engine's result passed through", got)
+	}
+}
+
+func TestApp_SampleMongoDocuments_NonPositiveNFallsBackToDefault(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	var gotN int
+	engine := &fakeMongoEngine{
+		sampleDocumentsFunc: func(ctx context.Context, database, collection string, n int) ([]map[string]any, error) {
+			gotN = n
+			return nil, nil
+		},
+	}
+	a.putMongoSession("session-1", &mongoSession{engine: engine})
+
+	if _, err := a.SampleMongoDocuments("session-1", "mydb", "widgets", 0); err != nil {
+		t.Fatalf("SampleMongoDocuments() failed: %v", err)
+	}
+	if gotN != defaultMongoSampleSize {
+		t.Errorf("engine.SampleDocuments() received n=%d, want the default %d", gotN, defaultMongoSampleSize)
+	}
+}
+
+func TestApp_SampleMongoDocuments_ReturnsEmptySliceNotNil(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	engine := &fakeMongoEngine{
+		sampleDocumentsFunc: func(ctx context.Context, database, collection string, n int) ([]map[string]any, error) {
+			return nil, nil
+		},
+	}
+	a.putMongoSession("session-1", &mongoSession{engine: engine})
+
+	got, err := a.SampleMongoDocuments("session-1", "mydb", "widgets", 10)
+	if err != nil {
+		t.Fatalf("SampleMongoDocuments() failed: %v", err)
+	}
+	if got == nil {
+		t.Error("SampleMongoDocuments() returned nil, want a non-nil empty slice")
+	}
+}
+
+func TestApp_BuildMongoStructureDiagram_NotFoundSessionReturnsError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+
+	if _, err := a.BuildMongoStructureDiagram("does-not-exist", "mydb", 50); err == nil {
+		t.Error("BuildMongoStructureDiagram() with an unknown session ID: expected an error, got nil")
+	} else if !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("BuildMongoStructureDiagram() error = %q, want it to name the missing session ID", err.Error())
+	}
+}
+
+func TestApp_BuildMongoStructureDiagram_SamplesEveryCollectionAndRendersMermaidText(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	var sampledCollections []string
+	var gotN int
+	engine := &fakeMongoEngine{
+		listCollectionsFunc: func(ctx context.Context, database string) ([]string, error) {
+			return []string{"widgets", "orders"}, nil
+		},
+		sampleDocumentsFunc: func(ctx context.Context, database, collection string, n int) ([]map[string]any, error) {
+			sampledCollections = append(sampledCollections, collection)
+			gotN = n
+			return []map[string]any{{"name": "bolt"}}, nil
+		},
+	}
+	a.putMongoSession("session-1", &mongoSession{engine: engine})
+
+	got, err := a.BuildMongoStructureDiagram("session-1", "mydb", 30)
+	if err != nil {
+		t.Fatalf("BuildMongoStructureDiagram() failed: %v", err)
+	}
+	if !strings.Contains(got, "erDiagram") {
+		t.Errorf("BuildMongoStructureDiagram() = %q, want it to contain \"erDiagram\"", got)
+	}
+	if !strings.Contains(got, "widgets") || !strings.Contains(got, "orders") {
+		t.Errorf("BuildMongoStructureDiagram() = %q, want it to render both sampled collections", got)
+	}
+	if len(sampledCollections) != 2 {
+		t.Errorf("sampled %v, want exactly the 2 collections ListCollections returned", sampledCollections)
+	}
+	if gotN != 30 {
+		t.Errorf("engine.SampleDocuments() received n=%d, want 30", gotN)
+	}
+}
+
+func TestApp_BuildMongoStructureDiagram_NonPositiveSampleSizeFallsBackToDefault(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	var gotN int
+	engine := &fakeMongoEngine{
+		listCollectionsFunc: func(ctx context.Context, database string) ([]string, error) {
+			return []string{"widgets"}, nil
+		},
+		sampleDocumentsFunc: func(ctx context.Context, database, collection string, n int) ([]map[string]any, error) {
+			gotN = n
+			return nil, nil
+		},
+	}
+	a.putMongoSession("session-1", &mongoSession{engine: engine})
+
+	if _, err := a.BuildMongoStructureDiagram("session-1", "mydb", 0); err != nil {
+		t.Fatalf("BuildMongoStructureDiagram() failed: %v", err)
+	}
+	if gotN != defaultMongoSampleSize {
+		t.Errorf("engine.SampleDocuments() received n=%d, want the default %d", gotN, defaultMongoSampleSize)
+	}
+}
+
+func TestApp_BuildMongoStructureDiagram_PropagatesListCollectionsError(t *testing.T) {
+	a := &App{ctx: context.Background()}
+	wantErr := errors.New("boom")
+	engine := &fakeMongoEngine{
+		listCollectionsFunc: func(ctx context.Context, database string) ([]string, error) {
+			return nil, wantErr
+		},
+	}
+	a.putMongoSession("session-1", &mongoSession{engine: engine})
+
+	if _, err := a.BuildMongoStructureDiagram("session-1", "mydb", 10); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Errorf("BuildMongoStructureDiagram() error = %v, want it to wrap the underlying ListCollections error", err)
 	}
 }

@@ -1,13 +1,16 @@
 import {useCallback, useEffect, useRef, useState} from 'react'
 import {
+    CloseMongoSession,
     ConnectUsingSavedConnection,
     DeleteConnection,
     ListConnections,
+    OpenMongoConnection,
     ParseConnectionURL,
     SaveConnection,
     TestConnection,
 } from '../../../wailsjs/go/main/App'
 import type {main, storage} from '../../../wailsjs/go/models'
+import MongoDocumentView from './MongoDocumentView'
 import QueryEditor, {type QueryEditorHandle} from './QueryEditor'
 import QueryHistoryPanel from './QueryHistoryPanel'
 import SnippetsPanel from './SnippetsPanel'
@@ -36,12 +39,50 @@ interface ParamRow {
     value: string
 }
 
-interface DbClientTab {
+interface SqlTab {
+    kind: 'sql'
     id: string
     label: string
     fields: main.ConnectionFormFields
     initialQuery?: string
 }
+
+/**
+ * A Mongo-connected tab (tasks.md 5.2-5.5). Unlike a `SqlTab`, this carries
+ * no session ID of its own: `MongoDocumentView` opens and closes its own
+ * live Mongo session entirely within its own mount/unmount lifecycle (see
+ * that component's doc comment for why — in short, a session opened outside
+ * a component and only closed by that component's unmount effect breaks
+ * under React 18 StrictMode's dev-only double-invoke of effects, which was
+ * caught during this feature's manual verification pass, not just a
+ * theoretical concern). `handleTestConnection`'s mongodb branch still opens
+ * a throwaway `OpenMongoConnection` call before adding this tab — purely to
+ * validate reachability up front, mirroring `TestConnection`'s own
+ * open-then-immediately-close contract for SQL engines — and closes it
+ * again immediately, never handing that session to the tab itself.
+ */
+interface MongoTab {
+    kind: 'mongo'
+    id: string
+    label: string
+    fields: main.ConnectionFormFields
+}
+
+/**
+ * `DbClientView`'s tab strip is one unified list discriminated by `kind`,
+ * not a parallel Mongo-only tab list next to the SQL one (tasks.md 5.1's
+ * "map its query model onto the existing tab/connection shell"). `TabBar`
+ * and `tabState`'s `openTab`/`closeTab` both only ever cared about a tab's
+ * `id`/`label` — neither needed a single line of change to support a mixed
+ * tab strip, since they were already engine-agnostic. A unified strip also
+ * matches spec.md's goal 2 directly ("single, coherent UI — no per-engine
+ * tool switching"): a user with both a Postgres query tab and a Mongo
+ * browsing tab open sees one tab row, not two separate UIs to juggle. The
+ * alternative (a second, Mongo-only tab list/strip) was considered and
+ * rejected for that reason — it would have been less code here, but it
+ * fragments exactly the experience goal 2 calls out.
+ */
+type DbClientTab = SqlTab | MongoTab
 
 function labelForFields(fields: main.ConnectionFormFields): string {
     return `${fields.Engine}@${fields.Host}:${fields.Port}`
@@ -109,8 +150,14 @@ function DbClientView() {
         }
     }, [])
 
-    const addTab = useCallback((fields: main.ConnectionFormFields, label: string, initialQuery?: string) => {
-        const tab: DbClientTab = {id: nextTabId(), label, fields, initialQuery}
+    const addSqlTab = useCallback((fields: main.ConnectionFormFields, label: string, initialQuery?: string) => {
+        const tab: DbClientTab = {kind: 'sql', id: nextTabId(), label, fields, initialQuery}
+        setTabs((prev) => openTab(prev, tab).tabs)
+        setActiveTabId(tab.id)
+    }, [])
+
+    const addMongoTab = useCallback((fields: main.ConnectionFormFields, label: string) => {
+        const tab: DbClientTab = {kind: 'mongo', id: nextTabId(), label, fields}
         setTabs((prev) => openTab(prev, tab).tabs)
         setActiveTabId(tab.id)
     }, [])
@@ -197,6 +244,15 @@ function DbClientView() {
         }
     }, [database, engine, host, paramRows, password, port, refreshSavedConnections, saveName, username])
 
+    /**
+     * "Load" a saved connection (tasks.md 3.5). Branches only on which kind
+     * of tab to open — unlike `handleTestConnection`, this never pre-
+     * validates reachability itself (matching the pre-existing SQL Load
+     * behavior exactly: `ConnectUsingSavedConnection` only fetches the
+     * stored form fields, it never dials the target database). A Mongo tab
+     * opened this way validates reachability itself, on mount, inside
+     * `MongoDocumentView`.
+     */
     const handleLoadConnection = useCallback(
         async (id: number, name: string) => {
             try {
@@ -204,13 +260,17 @@ function DbClientView() {
                 setParseError(null)
                 setPasteValue('')
                 applyParsedFields(fields)
-                addTab(fields, name)
+                if (fields.Engine === 'mongodb') {
+                    addMongoTab(fields, name)
+                } else {
+                    addSqlTab(fields, name)
+                }
                 await refreshSavedConnections()
             } catch (err) {
                 setSavedConnectionsError(String(err))
             }
         },
-        [addTab, applyParsedFields, refreshSavedConnections],
+        [addMongoTab, addSqlTab, applyParsedFields, refreshSavedConnections],
     )
 
     const handleReplayEntry = useCallback(
@@ -221,13 +281,13 @@ function DbClientView() {
                 setPasteValue('')
                 applyParsedFields(fields)
                 const savedConn = savedConnections.find((conn) => conn.ID === entry.ConnectionID)
-                addTab(fields, savedConn ? savedConn.Name : labelForFields(fields), entry.QueryText)
+                addSqlTab(fields, savedConn ? savedConn.Name : labelForFields(fields), entry.QueryText)
                 await refreshSavedConnections()
             } catch (err) {
                 setSavedConnectionsError(String(err))
             }
         },
-        [addTab, applyParsedFields, refreshSavedConnections, savedConnections],
+        [addSqlTab, applyParsedFields, refreshSavedConnections, savedConnections],
     )
 
     /**
@@ -265,10 +325,10 @@ function DbClientView() {
                 if (source.kind === 'scoped' || source.kind === 'most-recent-compatible') {
                     const fields = await ConnectUsingSavedConnection(source.connectionId)
                     const savedConn = savedConnections.find((conn) => conn.ID === source.connectionId)
-                    addTab(fields, savedConn ? savedConn.Name : labelForFields(fields), snippet.Body)
+                    addSqlTab(fields, savedConn ? savedConn.Name : labelForFields(fields), snippet.Body)
                     await refreshSavedConnections()
-                } else if (source.kind === 'reuse-active-tab' && activeTab) {
-                    addTab(activeTab.fields, activeTab.label, snippet.Body)
+                } else if (source.kind === 'reuse-active-tab' && activeTab && activeTab.kind === 'sql') {
+                    addSqlTab(activeTab.fields, activeTab.label, snippet.Body)
                 } else {
                     setRunSnippetError(
                         `Snippet "${snippet.Name}" is global and no ${snippet.Engine} connection is open or saved — open or save a ${snippet.Engine} connection first.`,
@@ -278,7 +338,7 @@ function DbClientView() {
                 setRunSnippetError(String(err))
             }
         },
-        [activeTabId, addTab, refreshSavedConnections, savedConnections, tabs],
+        [activeTabId, addSqlTab, refreshSavedConnections, savedConnections, tabs],
     )
 
     const handleDeleteConnection = useCallback(
@@ -296,6 +356,25 @@ function DbClientView() {
         [refreshSavedConnections],
     )
 
+    /**
+     * The connection form's single primary action button, for every engine
+     * (tasks.md 5.1's "map onto the existing tab/connection shell," extended
+     * here to the browsing UI): for Postgres/MySQL it runs `TestConnection`
+     * (a throwaway reachability check, connection closed immediately after)
+     * and then opens a SQL tab. MongoDB has no equivalent throwaway check —
+     * `TestConnection`/`newTestEngine` (app.go) explicitly don't support it
+     * yet (see docs/STATE.md Session 8) — so for MongoDB this calls
+     * `OpenMongoConnection` directly instead, as its own throwaway
+     * reachability check, and closes that session again immediately
+     * afterward: the tab itself opens its own independent, longer-lived
+     * session on mount (see `MongoDocumentView`'s doc comment for why it
+     * isn't handed this one). A failure to close the throwaway session is
+     * swallowed — it doesn't affect whether Connect itself succeeded, and
+     * the session was only ever going to be used for this one Ping anyway.
+     * Button label/state (`testState`/`testMessage`) is shared across both
+     * branches so the UI doesn't need a second parallel set of state just
+     * for the engine difference.
+     */
     const handleTestConnection = useCallback(async () => {
         setTestState('testing')
         setTestMessage(null)
@@ -310,15 +389,23 @@ function DbClientView() {
             SavedConnectionID: 0,
         }
         try {
-            await TestConnection(fields)
-            setTestState('success')
-            setTestMessage('Connected successfully.')
-            addTab(fields, labelForFields(fields))
+            if (fields.Engine === 'mongodb') {
+                const throwawaySessionID = await OpenMongoConnection(fields)
+                await CloseMongoSession(throwawaySessionID).catch(() => undefined)
+                setTestState('success')
+                setTestMessage('Connected successfully.')
+                addMongoTab(fields, labelForFields(fields))
+            } else {
+                await TestConnection(fields)
+                setTestState('success')
+                setTestMessage('Connected successfully.')
+                addSqlTab(fields, labelForFields(fields))
+            }
         } catch (err) {
             setTestState('error')
             setTestMessage(String(err))
         }
-    }, [addTab, database, engine, host, paramRows, password, port, username])
+    }, [addMongoTab, addSqlTab, database, engine, host, paramRows, password, port, username])
 
     const handleNewTab = useCallback(() => {
         setActiveTabId(null)
@@ -497,7 +584,13 @@ function DbClientView() {
                         disabled={testState === 'testing' || host.trim().length === 0}
                         className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                        {testState === 'testing' ? 'Testing…' : 'Test connection'}
+                        {engine === 'mongodb'
+                            ? testState === 'testing'
+                                ? 'Connecting…'
+                                : 'Connect'
+                            : testState === 'testing'
+                              ? 'Testing…'
+                              : 'Test connection'}
                     </button>
                     {testState === 'success' && <p className="text-sm text-emerald-400">{testMessage}</p>}
                     {testState === 'error' && <p className="text-sm text-red-400">{testMessage}</p>}
@@ -586,11 +679,15 @@ function DbClientView() {
                     />
                     {tabs.map((tab) => (
                         <div key={tab.id} className={tab.id === activeTabId ? '' : 'hidden'}>
-                            <QueryEditor
-                                ref={(handle) => registerEditorHandle(tab.id, handle)}
-                                fields={tab.fields}
-                                initialQuery={tab.initialQuery}
-                            />
+                            {tab.kind === 'sql' ? (
+                                <QueryEditor
+                                    ref={(handle) => registerEditorHandle(tab.id, handle)}
+                                    fields={tab.fields}
+                                    initialQuery={tab.initialQuery}
+                                />
+                            ) : (
+                                <MongoDocumentView fields={tab.fields} />
+                            )}
                         </div>
                     ))}
                     {activeTabId === null && (
