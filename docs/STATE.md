@@ -4952,3 +4952,116 @@ passing) — all green. No new synthetic profile/service IDs or
 `HostPort` literals were introduced (no Go test files touched), so the
 9990xx-collision class of bug from the prior session doesn't apply
 here.
+
+## Session 26 — Phase 11 correction pass: live user feedback on onboarding, dead space, edit discoverability
+
+Direct follow-up to Session 25, driven by the user actually clicking
+through the shipped 3-panel-to-tabs rework live and reporting three
+specific complaints in their own words: (1) "No sé qué hacer al entrar
+por primera vez" — no first-time guidance; (2) "No se nota que se
+puede editar (doble clic / clic derecho)" — the double-click-to-edit/
+right-click-row interactions from 11.2 have zero visual affordance;
+(3) "El espacio sigue mal distribuido" — the left sidebar and the
+Tools tab's Template gallery visibly stretched to fill the full
+viewport height with dead dark space below their real content instead
+of sizing to it. A mockup was produced, approved by the user ("Me
+gusta la propuesta"), and used as the visual/structural reference —
+its Spanish copy was translated to English for the actual
+implementation, matching this app's existing English UI throughout.
+
+**1. Onboarding empty state** (`DbClientView.tsx`): the old bare
+"No open connections yet. Use the left sidebar's..." sentence, shown
+whenever `tabs.length === 0`, is replaced by a new `OnboardingGuide`
+component — a welcome heading ("Connect to a database to get
+started"), a one-line subtitle, and a 3-card step grid: **Step 1
+Connect** (paste a URL or fill the form, with a
+`postgres://user:pass@host:5432/db` example rendered as inline
+`<code>`), **Step 2 Browse and edit your data** (click a table in the
+sidebar's schema tree, it opens in Data as an editable grid), **Step 3
+Query and organize** (SQL in Query, templates/snippets in Tools). It
+only replaces the `tabs.length === 0` branch — the separate
+`tabs.length > 0 && activeTabId === null` message (an existing tab
+list with nothing selected) was left as its own short line rather than
+folded into the same guide, since a returning user in that state
+already knows the flow; the full onboarding disappearing "once a
+connection tab is open" only ever meant the true first-run case.
+
+**2. Content-sized panels, not viewport-stretched.** Root cause,
+confirmed by inspecting the actual layout rather than guessing: the
+left `<aside>` (Connections + Schema) is a flex item inside a flex
+*row* (`<div className="flex min-h-0 flex-1 gap-4 overflow-hidden">`);
+with the browser default `align-items: stretch`, that aside was always
+stretched to match `<main>`'s full height regardless of how little its
+own content needed — exactly the "large empty dark space" the user
+saw. Fix: added `self-start` (so it only takes its own content height)
+plus `max-h-full` (so it can still scroll internally via its existing
+`overflow-y-auto` if a user's connection/table list ever *does* get
+tall enough to exceed the available row height) directly on the
+`<aside>` element — deliberately not `items-start` on the parent row,
+since that would have also shrink-wrapped `<main>` and broken the
+Query/Data editor's legitimate need to fill available vertical space.
+Separately, the Tools tab's wrapping container
+(`effectiveWorkspaceTab === 'tools' ? '...' : 'hidden'`) had its own
+`flex-1` dropped (kept `flex flex-col gap-3`, lost only the growth
+flag) — `flex-1` forced that whole column to claim all of `<main>`'s
+remaining height even though a card-based Template gallery/Snippets/
+History list should hug its own content, unlike the Query/Data
+container (still `flex-1` on purpose, since Monaco's editor and the
+results grid do benefit from all available height). Verified live: the
+sidebar and the Template gallery both now end right where their
+content ends, no more dead space underneath.
+
+**3. Persistent edit-discoverability hint bar** (`ResultsGrid.tsx`):
+added a small, always-visible bar directly above the grid — "**Double-
+click** a cell to edit" and "**Right-click** a row for more options",
+each label in a `<kbd>`-styled brass badge — gated on the exact same
+`tableIsEditable` boolean the existing read-only-banner branch already
+uses, so the two are mutually exclusive by construction: a
+primary-key-less table keeps showing its pre-existing "no primary key,
+read-only" amber banner and never shows an edit hint that wouldn't
+apply, while an editable table always shows the hint bar (not a
+tooltip/hover-only affordance) instead of the banner. No behavior
+changed in `startEditingCell`/`performDeleteRows` — this task was
+explicitly visual-affordance-only, and double-click-edit/right-click-
+delete were re-verified to work exactly as before.
+
+**Testing**: presentational-only changes (copy, layout classes, a
+static hint bar) — no new pure-logic helpers were warranted, and none
+were added; `tsc --noEmit`, `pnpm run build`, and `pnpm run test`
+(244/244, unchanged) were all re-run clean.
+
+**Manual live verification**: real `wails dev` (Wails CLI v2.12.0)
+against a throwaway `postgres:16-alpine` Docker container on port
+15800 (`stackyard-verify-pg`, never through Environments/
+CreateProfile — connected directly via DB Client's paste-URL field, to
+stay clear of the real app-data database entirely per the standing
+rule from the Session 24 incident), driven end-to-end with Playwright
+(`npx playwright`, Chromium, scripted via a throwaway Node script in
+the session scratchpad, not committed anywhere). Screenshots
+confirmed, in order: (a) the 3-step onboarding guide renders before
+any connection is open; (b) it's fully replaced by the Query editor
+the moment a connection tab opens, and the left sidebar is already
+visibly content-sized at that point (no stretched empty box); (c)
+opening a PK'd table (`customers`) in Data shows the new hint bar
+directly above the grid toolbar; (d) double-clicking a cell still
+enters inline edit exactly as before; (e) right-clicking a row still
+opens the "Delete row" context menu exactly as before; (f) opening a
+PK-less table (`audit_log`) shows only the existing read-only amber
+banner, never the hint bar; (g) the Tools tab's Template gallery is
+content-sized with no dead space below it. The throwaway Postgres
+container was removed and the entire `wails dev` process tree
+(`wails.exe` → `cmd.exe` → `pnpm`/`vite`/`node` → the compiled dev
+webview) was killed via `taskkill /T /F` before finishing, so nothing
+is left over to conflict with a later verification pass on the same
+machine/port range.
+
+**Judgment calls**: the mockup's subtitle referenced a "¿Cómo
+funciona?" button that doesn't exist anywhere in this app — dropped
+rather than inventing a new affordance not requested by the task; the
+shipped subtitle is a generic one-liner instead
+("Stackyard's DB Client works in three steps. This guide disappears
+once you open a connection."). English copy elsewhere is a direct,
+non-literal translation of the mockup's Spanish intent (e.g. "Mirá y
+editá tus datos" → "Browse and edit your data"), matching this app's
+existing UI tone rather than the mockup's own conversational-review
+phrasing.

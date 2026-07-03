@@ -402,6 +402,23 @@ function ResultsGrid({result, editable, onRequestPage, pageOffset, pageLimit, pa
             )}
 
             {tableIsEditable && (
+                <div className="flex flex-wrap items-center gap-4 rounded border border-ink-800 bg-ink-900/60 px-3 py-2 text-xs text-ink-300">
+                    <span className="flex items-center gap-1.5">
+                        <kbd className="rounded border border-ink-700 bg-ink-800 px-1.5 py-0.5 font-mono text-[10px] text-brass-400">
+                            Double-click
+                        </kbd>
+                        a cell to edit
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                        <kbd className="rounded border border-ink-700 bg-ink-800 px-1.5 py-0.5 font-mono text-[10px] text-brass-400">
+                            Right-click
+                        </kbd>
+                        a row for more options
+                    </span>
+                </div>
+            )}
+
+            {tableIsEditable && (
                 <div className="flex items-center gap-3">
                     <button
                         type="button"

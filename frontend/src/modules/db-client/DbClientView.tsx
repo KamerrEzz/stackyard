@@ -606,7 +606,7 @@ function DbClientView() {
             </div>
 
             <div className="flex min-h-0 flex-1 gap-4 overflow-hidden">
-                <aside className="flex w-72 shrink-0 flex-col gap-4 overflow-y-auto rounded border border-ink-800 bg-ink-900/40 p-3">
+                <aside className="flex max-h-full w-72 shrink-0 flex-col gap-4 self-start overflow-y-auto rounded border border-ink-800 bg-ink-900/40 p-3">
                     <div className="flex flex-col gap-3">
                         <div className="flex items-center justify-between">
                             <h2 className="text-xs uppercase tracking-widest text-ink-400">Connections</h2>
@@ -925,12 +925,7 @@ function DbClientView() {
                     </div>
 
                     <div className={effectiveWorkspaceTab === 'tools' ? 'hidden' : 'flex flex-1 flex-col gap-3'}>
-                        {tabs.length === 0 && (
-                            <p className="text-sm text-ink-500">
-                                No open connections yet. Use the left sidebar's "+ New connection" form, or Load a
-                                saved connection, to get started.
-                            </p>
-                        )}
+                        {tabs.length === 0 && <OnboardingGuide />}
                         {tabs.length > 0 && activeTabId === null && (
                             <p className="text-sm text-ink-500">
                                 Load a saved connection from the left sidebar, or fill in the connection form and
@@ -957,7 +952,7 @@ function DbClientView() {
                         ))}
                     </div>
 
-                    <div className={effectiveWorkspaceTab === 'tools' ? 'flex flex-1 flex-col gap-3' : 'hidden'}>
+                    <div className={effectiveWorkspaceTab === 'tools' ? 'flex flex-col gap-3' : 'hidden'}>
                         <div className="flex items-center gap-1 rounded border border-ink-800 bg-ink-950/40 p-1 w-fit">
                             <button
                                 type="button"
@@ -1013,6 +1008,69 @@ function DbClientView() {
                         )}
                     </div>
                 </main>
+            </div>
+        </div>
+    )
+}
+
+interface OnboardingStep {
+    number: string
+    title: string
+    description: string
+    example?: string
+}
+
+const ONBOARDING_STEPS: OnboardingStep[] = [
+    {
+        number: 'Step 1',
+        title: 'Connect',
+        description: 'Paste a connection URL or fill in the form in the left sidebar.',
+        example: 'postgres://user:pass@host:5432/db',
+    },
+    {
+        number: 'Step 2',
+        title: 'Browse and edit your data',
+        description:
+            "Click a table in the left sidebar's schema tree — it opens in the Data tab as an editable, spreadsheet-style grid.",
+    },
+    {
+        number: 'Step 3',
+        title: 'Query and organize',
+        description: 'Write SQL in Query, or use saved templates and snippets in Tools.',
+    },
+]
+
+/**
+ * First-time-user welcome block (a direct fix for live user feedback: "no sé
+ * qué hacer al entrar por primera vez" — see docs/STATE.md's session entry
+ * for the full context). Replaces the old bare "no open connections yet"
+ * sentence with a 3-step guide matching this feature's approved mockup.
+ * Shown only while `tabs.length === 0` (see the caller in `DbClientView`) —
+ * it disappears the moment any connection tab is opened, exactly like the
+ * mockup's Screen 1 vs Screen 2 distinction.
+ */
+function OnboardingGuide() {
+    return (
+        <div className="flex flex-col gap-4 rounded border border-ink-800 bg-ink-900/60 p-6">
+            <div className="flex flex-col gap-1">
+                <h2 className="text-lg font-semibold text-ink-100">Connect to a database to get started</h2>
+                <p className="max-w-[56ch] text-sm text-ink-400">
+                    Stackyard's DB Client works in three steps. This guide disappears once you open a connection.
+                </p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {ONBOARDING_STEPS.map((step) => (
+                    <div key={step.number} className="flex flex-col gap-1.5 rounded border border-ink-800 bg-ink-850/60 p-4">
+                        <span className="font-mono text-xs font-semibold text-brass-500">{step.number}</span>
+                        <h3 className="text-sm font-semibold text-ink-100">{step.title}</h3>
+                        <p className="text-xs leading-relaxed text-ink-400">{step.description}</p>
+                        {step.example && (
+                            <code className="mt-1 break-all rounded border border-ink-800 bg-ink-950 px-2 py-1.5 font-mono text-[11px] text-brass-400">
+                                {step.example}
+                            </code>
+                        )}
+                    </div>
+                ))}
             </div>
         </div>
     )

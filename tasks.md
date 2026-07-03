@@ -228,3 +228,24 @@ all decided via explicit user confirmation, not assumed).
       identifiable primary key stay read-only with a clear reason
       shown, since there's no safe way to target a single row for
       UPDATE/DELETE without one.
+- [x] **11.3** DB Client: live-verified follow-up correction to 11.1
+      after direct user feedback on the shipped layout — onboarding
+      empty state (3-step guide) when no connection is open, remove
+      viewport-stretched empty space from the left sidebar's panels and
+      the Tools gallery, and a persistent hint bar above the data grid
+      ("Double-click a cell to edit • Right-click a row for more
+      options") so 11.2's edit interactions are actually discoverable
+      instead of silent. See `docs/STATE.md`'s follow-up session for
+      the approved mockup and exact scope.
+- [ ] **11.4** DB Client: real bug found via dogfooding — `ColumnInfo`
+      (Go: `internal/dbengine/engine.go`) carries no "this column has a
+      database-level DEFAULT" metadata, so `gridEditHelpers.ts`'s
+      `buildInsertPayload` always sends an explicit client-side value
+      (null/0/false/'') for every untouched non-primary-key column
+      instead of omitting it — meaning a column's real SQL `DEFAULT`
+      (e.g. `created_at TIMESTAMP DEFAULT NOW()`) never actually gets
+      applied when a row is added via "+ Add row" in the Data grid.
+      Extend `ColumnInfo` with default-value metadata (Postgres/MySQL
+      introspection from `information_schema.columns.column_default`),
+      and omit untouched non-PK columns that have a real default the
+      same way untouched PK columns are already omitted.
