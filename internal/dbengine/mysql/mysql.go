@@ -352,7 +352,7 @@ func (e *Engine) ListSchemas(ctx context.Context) ([]string, error) {
 }
 
 const listTablesQuery = `
-SELECT table_name, column_name, data_type, is_nullable, column_key
+SELECT table_name, column_name, data_type, is_nullable, column_key, column_default
 FROM information_schema.columns
 WHERE table_schema = ?
 ORDER BY table_name, ordinal_position`
@@ -362,6 +362,14 @@ ORDER BY table_name, ordinal_position`
 // MySQL's information_schema.columns carries primary-key membership
 // directly on COLUMN_KEY ('PRI' marks a primary key column), so no join
 // against a separate constraints table is needed here.
+//
+// HasDefault comes from column_default IS NOT NULL, which also covers
+// CURRENT_TIMESTAMP-style defaults (MySQL reports those as a non-null
+// column_default, e.g. "CURRENT_TIMESTAMP"). column_default is a sql.NullString
+// here because a plain AUTO_INCREMENT column with no explicit DEFAULT clause
+// reports a NULL column_default — the auto-increment behavior itself lives
+// in the EXTRA column, not COLUMN_DEFAULT — so scanning it as a bare string
+// would fail on that common case.
 func (e *Engine) ListTables(ctx context.Context, schema string) ([]dbengine.TableInfo, error) {
 	if e.db == nil {
 		return nil, ErrNotConnected
@@ -376,7 +384,8 @@ func (e *Engine) ListTables(ctx context.Context, schema string) ([]dbengine.Tabl
 	tables := make(map[string]*dbengine.TableInfo)
 	for rows.Next() {
 		var tableName, columnName, dataType, isNullable, columnKey string
-		if err := rows.Scan(&tableName, &columnName, &dataType, &isNullable, &columnKey); err != nil {
+		var columnDefault sql.NullString
+		if err := rows.Scan(&tableName, &columnName, &dataType, &isNullable, &columnKey, &columnDefault); err != nil {
 			return nil, translateMySQLError("scan table column", err)
 		}
 		table, ok := tables[tableName]
@@ -390,6 +399,7 @@ func (e *Engine) ListTables(ctx context.Context, schema string) ([]dbengine.Tabl
 			DataType:     dataType,
 			Nullable:     isNullable == "YES",
 			IsPrimaryKey: columnKey == "PRI",
+			HasDefault:   columnDefault.Valid,
 		})
 	}
 	if err := rows.Err(); err != nil {

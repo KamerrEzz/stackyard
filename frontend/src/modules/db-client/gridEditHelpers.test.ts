@@ -14,7 +14,14 @@ import {
 } from './gridEditHelpers'
 
 function column(overrides: Partial<dbengine.ColumnInfo>): dbengine.ColumnInfo {
-    return new dbengine.ColumnInfo({Name: 'col', DataType: 'text', Nullable: false, IsPrimaryKey: false, ...overrides})
+    return new dbengine.ColumnInfo({
+        Name: 'col',
+        DataType: 'text',
+        Nullable: false,
+        IsPrimaryKey: false,
+        HasDefault: false,
+        ...overrides,
+    })
 }
 
 describe('isNumericColumnType', () => {
@@ -164,9 +171,37 @@ describe('buildInsertPayload', () => {
         expect(payload).toEqual({id: 99, label: 'hello'})
     })
 
-    it('always includes untouched non-primary-key columns using their current value', () => {
+    it('includes untouched non-primary-key columns without a database default, using their current value', () => {
         const payload = buildInsertPayload(columns, {id: 0, label: ''}, new Set())
         expect(payload).toEqual({label: ''})
+    })
+
+    it('omits an untouched column with a database-level default so the database can apply it', () => {
+        const columnsWithDefault = [
+            column({Name: 'id', DataType: 'integer', Nullable: false, IsPrimaryKey: true}),
+            column({Name: 'label', DataType: 'text', Nullable: false}),
+            column({Name: 'status', DataType: 'text', Nullable: false, HasDefault: true}),
+        ]
+        const payload = buildInsertPayload(
+            columnsWithDefault,
+            {id: 0, label: 'hello', status: ''},
+            new Set(['label']),
+        )
+        expect(payload).toEqual({label: 'hello'})
+    })
+
+    it('includes a column with a database-level default when the user explicitly touched it', () => {
+        const columnsWithDefault = [
+            column({Name: 'id', DataType: 'integer', Nullable: false, IsPrimaryKey: true}),
+            column({Name: 'label', DataType: 'text', Nullable: false}),
+            column({Name: 'status', DataType: 'text', Nullable: false, HasDefault: true}),
+        ]
+        const payload = buildInsertPayload(
+            columnsWithDefault,
+            {id: 0, label: 'hello', status: 'active'},
+            new Set(['label', 'status']),
+        )
+        expect(payload).toEqual({label: 'hello', status: 'active'})
     })
 })
 

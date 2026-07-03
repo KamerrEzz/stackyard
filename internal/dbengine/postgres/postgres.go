@@ -250,7 +250,8 @@ SELECT
 	c.column_name,
 	c.data_type,
 	c.is_nullable = 'YES' AS nullable,
-	COALESCE(pk.is_primary_key, false) AS is_primary_key
+	COALESCE(pk.is_primary_key, false) AS is_primary_key,
+	c.column_default IS NOT NULL AS has_default
 FROM information_schema.columns c
 LEFT JOIN (
 	SELECT ku.table_schema, ku.table_name, ku.column_name, true AS is_primary_key
@@ -273,6 +274,14 @@ ORDER BY c.table_name, c.ordinal_position`
 // keys — Postgres has no single-column "is this a primary key" flag the way
 // MySQL's information_schema.columns.COLUMN_KEY does, so the constraint
 // tables have to be joined explicitly.
+//
+// HasDefault comes straight from column_default IS NOT NULL. This is also
+// true for identity/serial columns, whose column_default holds an
+// auto-generated nextval(...) sequence expression rather than a
+// user-authored default — those columns are also IsPrimaryKey in the common
+// case and already get omitted from INSERT payloads via that check, so a
+// non-PK column with a nextval default (rare, but possible) correctly gets
+// omitted too, letting the database apply it.
 func (e *Engine) ListTables(ctx context.Context, schema string) ([]dbengine.TableInfo, error) {
 	if e.pool == nil {
 		return nil, ErrNotConnected
@@ -287,8 +296,8 @@ func (e *Engine) ListTables(ctx context.Context, schema string) ([]dbengine.Tabl
 	tables := make(map[string]*dbengine.TableInfo)
 	for rows.Next() {
 		var tableName, columnName, dataType string
-		var nullable, isPrimaryKey bool
-		if err := rows.Scan(&tableName, &columnName, &dataType, &nullable, &isPrimaryKey); err != nil {
+		var nullable, isPrimaryKey, hasDefault bool
+		if err := rows.Scan(&tableName, &columnName, &dataType, &nullable, &isPrimaryKey, &hasDefault); err != nil {
 			return nil, translatePgError("scan table column", err)
 		}
 		table, ok := tables[tableName]
@@ -302,6 +311,7 @@ func (e *Engine) ListTables(ctx context.Context, schema string) ([]dbengine.Tabl
 			DataType:     dataType,
 			Nullable:     nullable,
 			IsPrimaryKey: isPrimaryKey,
+			HasDefault:   hasDefault,
 		})
 	}
 	if err := rows.Err(); err != nil {

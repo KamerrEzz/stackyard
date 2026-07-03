@@ -120,7 +120,21 @@ func BuildUpdateRow(dialect Dialect, schema, table, columnName string, newValue 
 // final values back in the same round trip; MySQL has no equivalent
 // clause, so InsertTableRow must re-SELECT separately for that dialect —
 // see InsertTableRow's own doc comment for how it does that.
+//
+// An empty columns list happens when every column is either an untouched
+// primary key or has a database-level DEFAULT (tasks.md 11.4) — the caller
+// wants a row built entirely from the table's own defaults. `INSERT INTO
+// t () VALUES ()` is valid MySQL but a syntax error on Postgres, which
+// requires the dedicated `DEFAULT VALUES` form instead; MySQL keeps using
+// the same empty-parens form the general case already produces, so only
+// Postgres needs a distinct branch here.
 func BuildInsertRow(dialect Dialect, schema, table string, columns []string, values map[string]any) (string, []any) {
+	if len(columns) == 0 && dialect == DialectPostgres {
+		sql := fmt.Sprintf("INSERT INTO %s DEFAULT VALUES RETURNING *",
+			qualifiedTableName(dialect, schema, table))
+		return sql, nil
+	}
+
 	quotedColumns := make([]string, len(columns))
 	placeholders := make([]string, len(columns))
 	args := make([]any, len(columns))

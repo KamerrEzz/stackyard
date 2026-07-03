@@ -129,6 +129,31 @@ func TestBuildInsertRow(t *testing.T) {
 			t.Errorf("args = %v, want %v", args, wantArgs)
 		}
 	})
+
+	t.Run("postgres empty columns uses DEFAULT VALUES", func(t *testing.T) {
+		// Happens when every column is an untouched primary key or has a
+		// database DEFAULT (tasks.md 11.4) — a plain `() VALUES ()` is a
+		// Postgres syntax error, unlike MySQL's identical case below.
+		sql, args := BuildInsertRow(DialectPostgres, "public", "orders", nil, nil)
+		wantSQL := `INSERT INTO "public"."orders" DEFAULT VALUES RETURNING *`
+		if sql != wantSQL {
+			t.Errorf("sql = %q, want %q", sql, wantSQL)
+		}
+		if args != nil {
+			t.Errorf("args = %v, want nil", args)
+		}
+	})
+
+	t.Run("mysql empty columns uses empty parens", func(t *testing.T) {
+		sql, args := BuildInsertRow(DialectMySQL, "shop", "orders", nil, nil)
+		wantSQL := "INSERT INTO `shop`.`orders` () VALUES ()"
+		if sql != wantSQL {
+			t.Errorf("sql = %q, want %q", sql, wantSQL)
+		}
+		if len(args) != 0 {
+			t.Errorf("args = %v, want empty", args)
+		}
+	})
 }
 
 func TestBuildDeleteRow(t *testing.T) {

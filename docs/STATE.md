@@ -5065,3 +5065,162 @@ non-literal translation of the mockup's Spanish intent (e.g. "Mirá y
 editá tus datos" → "Browse and edit your data"), matching this app's
 existing UI tone rather than the mockup's own conversational-review
 phrasing.
+
+## Session 27 — Task 11.4 closed: `ColumnInfo.HasDefault` — untouched columns with a real SQL DEFAULT were never omitted from INSERT
+
+**Root cause**: `ColumnInfo` (`internal/dbengine/engine.go`) carried no
+signal for "this column has a database-level DEFAULT". `buildInsertPayload`
+(`frontend/src/modules/db-client/gridEditHelpers.ts`) only ever omitted an
+untouched column when it was the primary key — every other untouched
+column was always included with `defaultValueForColumn`'s client-side
+placeholder (`null` if nullable, else `0`/`false`/`''`). So a column like
+`status TEXT NOT NULL DEFAULT 'pending'` never got its real default applied
+via "+ Add row": the grid explicitly sent `''` instead of omitting the
+column, and Postgres/MySQL happily accepted the explicit empty string
+since it satisfies `NOT NULL` on its own.
+
+**Fix**:
+1. `ColumnInfo` gained `HasDefault bool` (`internal/dbengine/engine.go`) —
+   a boolean signal only, not the default expression text, since the only
+   consumer needs to decide whether to omit the column, not what the
+   default evaluates to.
+2. Postgres (`internal/dbengine/postgres/postgres.go`): `listTablesQuery`
+   now also selects `c.column_default IS NOT NULL AS has_default`. This is
+   also `true` for identity/serial columns (their `column_default` holds an
+   auto-generated `nextval(...)` expression) — already fine, since those
+   columns are also `IsPrimaryKey` in the common case and already omitted;
+   a non-PK column with a `nextval` default would now also correctly be
+   omitted, letting Postgres apply it.
+3. MySQL (`internal/dbengine/mysql/mysql.go`): `listTablesQuery` now also
+   selects `column_default`, scanned into a `sql.NullString` (not a bare
+   `string` — a plain `AUTO_INCREMENT` column with no explicit `DEFAULT`
+   clause reports a **NULL** `column_default` in MySQL; auto-increment
+   itself lives in the `EXTRA` column, not `COLUMN_DEFAULT`, confirmed live
+   against a real container during verification, see below).
+   `HasDefault` is `columnDefault.Valid`. This also correctly covers
+   `CURRENT_TIMESTAMP`-style defaults, which MySQL reports as a non-null
+   `column_default` string.
+4. Frontend (`gridEditHelpers.ts`): `buildInsertPayload` now omits an
+   untouched column whenever `column.IsPrimaryKey || column.HasDefault` —
+   not just the primary-key case. Doc comment rewritten (the old one
+   literally described the bug: "Every non-primary-key column is always
+   included").
+5. Wails bindings: `wails generate module` re-run; `frontend/wailsjs/go/
+   models.ts`'s `ColumnInfo` class already carried `HasDefault: boolean`
+   from an earlier partial pass and needed no further change — regenerating
+   confirmed it's exactly consistent with the new Go struct shape/field
+   order.
+
+**Testing**:
+- Go: extended `postgres_integration_test.go`/`mysql_integration_test.go`'s
+  shared `widgets` table with a `status ... DEFAULT 'pending'` column and
+  new assertions in `assertPostgresWidgetsColumns`/`assertMySQLWidgetsColumns`
+  — `status.HasDefault` true, `name`/`weight.HasDefault` false on both
+  engines, plus `id.HasDefault` true on Postgres (SERIAL's `nextval`
+  default). No `id.HasDefault` assertion was added for MySQL: unlike
+  Postgres, MySQL's `AUTO_INCREMENT` genuinely reports a NULL
+  `column_default` (verified live, not assumed), so asserting `true` there
+  would have been asserting the wrong thing.
+- Frontend: extended `gridEditHelpers.test.ts`'s `buildInsertPayload`
+  describe block with two new cases — an untouched column with
+  `HasDefault: true` is omitted, and the same column is included as-is
+  when the user explicitly touched it — alongside the pre-existing
+  primary-key coverage. 29/29 tests in that file, 246/246 overall.
+- Repo-wide port/ID collision check re-run fresh (`grep -oE "int64 =
+  9990\d\d"` and `HostPort` literals across the whole tree) before
+  finalizing, per the standing convention — no new integration containers
+  were added (the fix only extends the existing `widgets` fixture with one
+  more column), so no new IDs/ports were needed; confirmed every existing
+  `9990\d\d` value and `HostPort` literal is still unique.
+- Full verification, all green: `go build ./...`, `go vet ./...`,
+  `gofmt -l .` (empty), `go test ./...`, `go test -tags=integration ./...`
+  run twice back-to-back with `-count=1` (not relying on Go's test cache),
+  `pnpm run build`, `pnpm run test` (246/246).
+
+**Manual live verification — judgment call on method**: the task asked
+for `wails dev` + Playwright against a throwaway container. This session's
+tool access had no browser-automation tool available (unlike Session 26,
+which had Playwright), so a literal UI-driven repro wasn't possible here.
+Instead, a real, non-mocked, full-stack-equivalent verification was done
+directly against a throwaway `postgres:16-alpine` container started via
+plain `docker run` (`stackyard-manual-verify`, port 15900, never through
+Environments/CreateProfile): created `items (id SERIAL PRIMARY KEY, name
+TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending')`, then ran a
+throwaway Go program (`tmpverify/main.go`, deleted afterward, never
+committed) that called the real `dbengine/postgres` package's
+`ListTables` (confirming `HasDefault` is reported correctly straight off
+the live container: `id=true, name=false, status=true`), built the exact
+payload `buildInsertPayload` would produce for a row where only `name` was
+touched (`{"name": "widget-1"}`, `status`/`id` omitted), and passed it
+through the same `dbengine.BuildInsertRow` + `Engine.Exec` path
+`grid.go`'s `InsertTableRow` itself uses. Result, before/after, both real:
+- **After (fixed payload, `status` omitted)**: `INSERT INTO "public".
+  "items" ("name") VALUES ($1) RETURNING *` → row `(1, "widget-1",
+  "pending")` — the real `DEFAULT 'pending'` applied.
+- **Before (old buggy payload, `status` explicitly sent as `''`)**,
+  reproduced directly via `psql` for contrast: `INSERT INTO items (name,
+  status) VALUES ('widget-old-buggy', '')` → row `(2, "widget-old-buggy",
+  "")` — empty string, confirming the bug's exact symptom.
+The throwaway container and Go verification program were both removed
+before finishing (`docker stop`/`docker rm stackyard-manual-verify`, `rm
+-rf tmpverify/`); nothing from this verification pass is left in the
+working tree.
+
+**Judgment calls**:
+- Added a new `status` column to the *existing* `widgets` integration
+  fixture rather than a new table/test, since the existing fixture already
+  exercises `id`/`name`/`weight` for the no-default case — one additional
+  column covers the has-default case with minimal fixture churn and no new
+  container/port.
+- Did not add a `id.HasDefault` assertion for MySQL (see Testing above) —
+  asserting `true` there would contradict MySQL's actual, verified
+  behavior for plain `AUTO_INCREMENT` columns.
+- Substituted a direct `dbengine`-level real-container verification for
+  the requested `wails dev` + Playwright pass, since no browser-automation
+  tool was available this session; flagged here rather than silently
+  skipping live verification or claiming the UI path was exercised when it
+  wasn't.
+
+### Orchestrator follow-up: a real edge case the above verification missed
+
+Ran the orchestrator's own live `wails dev` + Playwright pass on top of
+the above (browser automation *was* available at the orchestrator
+level) — created a table with exactly two columns, an untouched SERIAL
+primary key and a `status TEXT NOT NULL DEFAULT 'pending'` column, then
+added a row via "+ Add row" without touching either field. Result: a
+real, reproducible bug this session's own `dbengine`-level verification
+didn't happen to exercise, because its test table (`widgets`) had a
+third, always-touched `name` column keeping the generated column list
+non-empty.
+
+**The bug**: when EVERY column in a table is either an untouched
+primary key or has `HasDefault: true`, `buildInsertPayload` now
+(correctly, per this session's fix) omits all of them — but
+`internal/dbengine/gridsql.go`'s `BuildInsertRow` unconditionally built
+`INSERT INTO table (%s) VALUES (%s)` from that column list, so an empty
+list produced `INSERT INTO "public"."orders" () VALUES ()`. That's
+valid MySQL (confirmed directly against a real `mysql:8` container:
+`INSERT INTO t1 () VALUES ()` succeeds and applies every default) but a
+hard Postgres syntax error (`SQLSTATE 42601`, confirmed directly against
+a real `postgres:16-alpine` container) — Postgres requires the
+dedicated `INSERT INTO t1 DEFAULT VALUES` form for this exact case
+instead.
+
+**Fix**: `BuildInsertRow` now special-cases `len(columns) == 0 &&
+dialect == DialectPostgres` to emit `INSERT INTO %s DEFAULT VALUES
+RETURNING *` (verified live via `psql` first, before touching Go code,
+to confirm both the failing and the working syntax). MySQL needed no
+change — its existing general-case output for an empty column list
+already IS `() VALUES ()`, confirmed correct and unchanged. Two new
+`TestBuildInsertRow` subtests cover both dialects' empty-column-list
+behavior. Re-verified live end-to-end afterward against the same
+two-column table: adding a row now correctly produces `status =
+"pending"`, confirmed via screenshot, no error.
+
+**Lesson**: a real-container check with a table shaped like the
+project's existing fixture is not the same as a check with a table
+shaped like the actual reported bug — the fixture's extra always-
+present column accidentally prevented the exact empty-payload case from
+ever being exercised. Re-verifying live against a table shaped
+precisely like the original bug report (not just "any table with a
+DEFAULT column") is what surfaced this.

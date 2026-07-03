@@ -116,12 +116,14 @@ export function coerceCellInput(column: ColumnInfo, raw: string): unknown {
 
 /**
  * Builds the values map InsertTableRow receives for a blank row (tasks.md
- * 4.2). A primary key column the user never touched is omitted entirely so
- * the database can apply its own default (the common auto-increment/serial
- * case); a primary key column the user explicitly edited is included
- * as-is, supporting manual primary key assignment. Every non-primary-key
- * column is always included, using its current value (its type-aware
- * default if the user left it untouched).
+ * 4.2). A column the user never touched is omitted entirely whenever the
+ * database can supply its own value instead: a primary key column (the
+ * common auto-increment/serial case) or any column with a database-level
+ * DEFAULT (column.HasDefault, e.g. DEFAULT NOW() or DEFAULT 'pending') — so
+ * the column's real default gets applied instead of this helper's
+ * client-side placeholder (see defaultValueForColumn). A column the user
+ * explicitly edited is always included as-is, whether or not it has a
+ * default, supporting manual value assignment.
  */
 export function buildInsertPayload(
     columns: readonly ColumnInfo[],
@@ -130,7 +132,7 @@ export function buildInsertPayload(
 ): Record<string, unknown> {
     const payload: Record<string, unknown> = {}
     for (const column of columns) {
-        if (column.IsPrimaryKey && !touchedColumns.has(column.Name)) {
+        if (!touchedColumns.has(column.Name) && (column.IsPrimaryKey || column.HasDefault)) {
             continue
         }
         payload[column.Name] = values[column.Name]

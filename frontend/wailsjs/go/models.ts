@@ -25,6 +25,7 @@ export namespace dbengine {
 	    DataType: string;
 	    Nullable: boolean;
 	    IsPrimaryKey: boolean;
+	    HasDefault: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ColumnInfo(source);
@@ -36,6 +37,7 @@ export namespace dbengine {
 	        this.DataType = source["DataType"];
 	        this.Nullable = source["Nullable"];
 	        this.IsPrimaryKey = source["IsPrimaryKey"];
+	        this.HasDefault = source["HasDefault"];
 	    }
 	}
 	export class ForeignKey {

@@ -98,11 +98,20 @@ type ResultColumn struct {
 }
 
 // ColumnInfo describes one column of a table.
+//
+// HasDefault reports whether the column carries a database-level DEFAULT
+// (e.g. DEFAULT NOW(), DEFAULT 'pending', or an identity/serial sequence
+// default) — it is a boolean signal only, not the default expression text
+// itself, since the only consumer (buildInsertPayload in the frontend's
+// db-client module) needs to decide whether to omit an untouched column
+// from an INSERT so the database applies its own default, not what that
+// default evaluates to.
 type ColumnInfo struct {
 	Name         string
 	DataType     string
 	Nullable     bool
 	IsPrimaryKey bool
+	HasDefault   bool
 }
 
 // TableInfo describes one table and its columns.

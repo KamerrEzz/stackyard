@@ -112,7 +112,7 @@ func TestIntegration_MySQLEngine(t *testing.T) {
 	}
 	t.Log("Ping() succeeded against the live container")
 
-	if _, err := engine.Query(ctx, `CREATE TABLE widgets (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64) NOT NULL, weight INT)`); err != nil {
+	if _, err := engine.Query(ctx, `CREATE TABLE widgets (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64) NOT NULL, weight INT, status VARCHAR(20) NOT NULL DEFAULT 'pending')`); err != nil {
 		t.Fatalf("CREATE TABLE failed: %v", err)
 	}
 	t.Log("CREATE TABLE widgets succeeded")
@@ -409,5 +409,20 @@ func assertMySQLWidgetsColumns(t *testing.T, columns []dbengine.ColumnInfo) {
 	}
 	if !weight.Nullable {
 		t.Error("widgets.weight has no NOT NULL constraint and should be reported as nullable")
+	}
+	if weight.HasDefault {
+		t.Error("widgets.weight has no DEFAULT clause and should be reported as HasDefault: false")
+	}
+
+	status, ok := byName["status"]
+	if !ok {
+		t.Fatal("widgets.status column missing from ListTables result")
+	}
+	if !status.HasDefault {
+		t.Error("widgets.status has a DEFAULT 'pending' clause and should be reported as HasDefault: true")
+	}
+
+	if name.HasDefault {
+		t.Error("widgets.name has no DEFAULT clause and should be reported as HasDefault: false")
 	}
 }

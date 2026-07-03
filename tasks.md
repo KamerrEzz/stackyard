@@ -237,7 +237,7 @@ all decided via explicit user confirmation, not assumed).
       options") so 11.2's edit interactions are actually discoverable
       instead of silent. See `docs/STATE.md`'s follow-up session for
       the approved mockup and exact scope.
-- [ ] **11.4** DB Client: real bug found via dogfooding — `ColumnInfo`
+- [x] **11.4** DB Client: real bug found via dogfooding — `ColumnInfo`
       (Go: `internal/dbengine/engine.go`) carries no "this column has a
       database-level DEFAULT" metadata, so `gridEditHelpers.ts`'s
       `buildInsertPayload` always sends an explicit client-side value
