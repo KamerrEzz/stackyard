@@ -72,10 +72,14 @@ actual run-through**, not just isolated per-phase tests.
   - **Migrations** (Postgres/MySQL only, per spec.md §4.8's own scope):
     create/apply/rollback with atomic per-migration commit of both the
     schema change and its tracking row, a dedicated top-level UI panel.
-- **Polish** (Phase 9): performance measured and recorded (not
+- **Polish & Ship** (Phase 9): performance measured and recorded (not
   guessed), a real cross-module visual bug found and fixed (see
-  ambiguities log below), the dogfood run above. **The Windows installer
-  (task 9.3) is the one incomplete item** — see §4/§5 below.
+  ambiguities log below), the dogfood run above, and a Windows NSIS
+  installer built and smoke-tested — installed to
+  `C:\Program Files\Kamerr Ezz\Stackyard\`, confirmed byte-identical to
+  the dev-built binary with zero dev-only path dependencies, launched
+  and ran correctly from the installed location. **All 9 phases of
+  `tasks.md` are now complete — there is no remaining incomplete item.**
 
 ### Test suite coverage areas (detail in §3)
 
@@ -304,14 +308,16 @@ git tag -a v0.5.0 -m "Phase 5: MongoDB support (document-oriented Engine via mon
 git tag -a v0.6.0 -m "Phase 6: Redis support (key-value Engine via go-redis/v9, all 5 data types, cursor-based SCAN, TTL display/edit/persist, key rename/delete) - completes Module 2, DB Client, in full for all 4 engines" 0d0197f
 git tag -a v0.7.0 -m "Phase 7: Import/Export (CSV/JSON/SQL-dump export for full-table and current-query-result scope, CSV/JSON import with pre-commit validation and atomic bulk-insert), verified via real round-trip tests against fresh Postgres and MySQL instances" 225c80f
 git tag -a v0.8.0 -m "Phase 8: Migrations for Postgres+MySQL (create-migration scaffolding, schema_migrations tracking table, atomic Apply/Rollback via a new optional dbengine.Transactor interface, Migrations UI panel with folder-picker and pending/applied status), manually verified end-to-end including direct database-level checks" e056136
+git tag -a v1.0.0 -m "Phase 9: Polish & Ship v1 (performance measured against the NFR bar, cross-module visual polish including a real missing-Tailwind-color-shade fix, Windows NSIS installer built and smoke-tested, a personally-driven dogfood run proving spec.md §7's full success-definition flow end-to-end) - completes every phase in the v1 roadmap" 7d52bbb
 ```
 
-**`v1.0.0` is intentionally NOT proposed above.** Phase 9 is not fully
-closed — task 9.3 (Windows installer) remains blocked (see §5). Once
-you resolve that blocker and confirm the installer builds/smoke-tests
-cleanly, `v1.0.0` should be tagged at that point's closing commit, not
-retroactively at `e19f0d6` (this session's last commit) — the actual v1
-ship commit should be the one where 9.3 genuinely finishes.
+**`v1.0.0` is now proposed** — task 9.3 (Windows installer) was resolved
+after this document was first drafted: the user installed NSIS, built
+the installer (`wails build -nsis`), ran it themselves (it also requests
+admin elevation by default, so this was the user's action, not mine —
+see §5), and the installed app was verified directly (byte-identical
+binary, zero dev-only path dependencies, launches and runs correctly).
+Every phase in `plan.md`'s roadmap is now complete.
 
 ---
 
@@ -371,44 +377,67 @@ grep -rn "HostPort\s*=\s*[0-9]\{4,5\}" --include="*.go" .   # hardcoded ports
 (Session 14 found and fixed a real flaky-test bug from checking only
 the first convention.)
 
-### Resolve the one open blocker: task 9.3, Windows installer
+### Building the Windows installer (task 9.3 — resolved)
 
-NSIS is required for Wails' Windows installer packaging and is not
-installed on the machine this session ran on. A non-interactive
+NSIS was required for Wails' Windows installer packaging and was not
+installed when this session began. A non-interactive
 `winget install --id NSIS.NSIS -e --silent` was attempted and verified
 safe (official package, hash-checked) but stalled at a UAC elevation
-prompt this session couldn't approve non-interactively.
+prompt this session couldn't approve non-interactively — the user then
+ran the same command in their own elevated terminal, which succeeded.
+`wails build -nsis` (run from `D:\CODE\projects\Stackyard`) then
+produced `build/bin/stackyard-amd64-installer.exe`.
 
-To unblock:
-1. Open an **elevated** ("Run as Administrator") terminal.
-2. `winget install --id NSIS.NSIS -e --accept-package-agreements --accept-source-agreements`
-   (or install NSIS manually from its official site if you prefer not
-   to use winget).
-3. From `D:\CODE\projects\Stackyard`: `wails build -nsis`
-4. Confirm `build/bin/stackyard-amd64-installer.exe` (or similarly
-   named) is produced.
-5. Smoke-test it: install to a throwaway location, launch the
-   *installed* executable (not `build/bin/stackyard.exe`) to confirm it
-   doesn't depend on any dev-only path (`frontend/node_modules`, etc.).
-   A real clean VM is the only fully rigorous test of "a machine without
-   the dev toolchain" — this session's environment couldn't fully
-   replicate that.
-6. Once confirmed, tag the resulting commit as `v1.0.0` (see §4).
+Two things worth knowing if you ever rebuild the installer on a new
+machine:
+- **NSIS's own installer does not add itself to PATH.** After
+  installing it, you need `C:\Program Files (x86)\NSIS` on your PATH
+  (note: the `(x86)` folder — NSIS is a 32-bit tool, an easy mix-up with
+  the non-`(x86)` `Program Files` path that this session itself got
+  wrong on the first try before self-correcting). A registry-level PATH
+  change requires a genuinely new terminal window to take effect — just
+  re-typing the command in an already-open one won't pick it up.
+- **The generated installer itself also requests admin elevation by
+  default** (`RequestExecutionLevel "admin"` in
+  `build/windows/installer/project.nsi` — a per-machine install into
+  `Program Files`). Running the installer therefore needs the same kind
+  of interactive approval NSIS's own install did. If you want a
+  no-admin, per-user install instead, change that directive to `"user"`
+  in the `.nsi` file — but treat that as a real product decision (it
+  changes install behavior for every future user), not a default to
+  flip casually.
+- `build/windows/installer/wails_tools.nsh` is a tracked TEMPLATE file
+  with `{{.Name}}`-style placeholders — `wails build -nsis` resolves
+  these in place and writes the real values back into the tracked file
+  as a build side effect. Run `git checkout -- build/windows/installer/wails_tools.nsh`
+  after building if you don't want that noise showing up as an
+  uncommitted diff (do NOT commit the resolved version — it would
+  defeat the template's reusability for the next build).
 
 `wails.json` already has an `info` block prepared (company/product
 name, version placeholder, copyright) so the NSIS template has real
-values the moment a build becomes possible — no further config change
-should be needed before step 3.
+values automatically — no config change should be needed.
+
+The installer was smoke-tested for real: the user installed it (to
+`C:\Program Files\Kamerr Ezz\Stackyard\` by default), and the installed
+`stackyard.exe` was confirmed byte-identical to the dev-built binary,
+with no `frontend/`/`node_modules`/dev-only path present anywhere in the
+install directory, and launched/ran correctly from that location. A
+genuinely clean VM (with no dev toolchain at all) remains the only
+fully rigorous version of this test — not performed, since the smoke
+test above already gives strong artifact-level confidence.
 
 ### If you're a fresh Claude session picking this up
 
 Read, in this order: this document, then `docs/STATE.md` from the most
 recent session backward only as far as you need context (it's long —
-~3900 lines across 20 sessions; each session's heading names its phase
-and task numbers, so you can jump directly to the relevant one via
-`grep -n "^## Session" docs/STATE.md`), then `tasks.md` to confirm which
-checkboxes are actually ticked (9.1/9.2/9.4 checked, 9.3 unchecked with
-its blocker documented, everything in Phases 0-8 checked). `spec.md` and
+over 4000 lines across 21 sessions; each session's heading names its
+phase and task numbers, so you can jump directly to the relevant one
+via `grep -n "^## Session" docs/STATE.md`), then `tasks.md` to confirm
+which checkboxes are actually ticked (all of Phases 0-9 should be
+checked — if any Phase 9 box is unchecked when you read this, something
+regressed after this document was written, worth investigating before
+trusting this document's "all complete" claim). `spec.md` and
 `plan.md` are the original requirements/architecture documents and
 haven't been modified during implementation — they remain the source of
 truth for "what was this supposed to do," while `docs/STATE.md` and this
