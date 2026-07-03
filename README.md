@@ -56,7 +56,21 @@ account.
 See the full [documentation site](docs-site/) for a deeper tour of every
 module.
 
-## Getting started
+## Download
+
+Windows users can skip building from source: grab the installer from the
+[latest release](https://github.com/KamerrEzz/stackyard/releases/latest)
+(`stackyard-amd64-installer.exe`), run it, and launch Stackyard from the
+Start Menu. Docker Desktop (or a local Docker Engine) still needs to be
+running for the Environment Manager to work.
+
+## Documentation
+
+Full docs (getting started, a page per feature, project background, and
+a guide for AI-assisted contributors) are live at
+**[kamerrezz.github.io/stackyard](https://kamerrezz.github.io/stackyard/)**.
+
+## Building from source
 
 **Prerequisites:** Go 1.25+, Node.js + pnpm, the
 [Wails CLI](https://wails.io/docs/gettingstarted/installation), and Docker
@@ -68,14 +82,12 @@ cd stackyard
 wails dev
 ```
 
-`wails build` produces a redistributable production binary. Full setup
-and usage instructions live in the
-[documentation site](docs-site/getting-started.md).
+`wails build -nsis` produces the redistributable Windows installer used
+in releases; plain `wails build` produces just the binary. Full setup and
+usage instructions live in the
+[documentation site](https://kamerrezz.github.io/stackyard/getting-started).
 
-### Documentation site
-
-The full docs (getting started, a page per feature, and project background)
-are a [VitePress](https://vitepress.dev) site under `docs-site/`:
+The docs site itself (source under `docs-site/`) can be run locally too:
 
 ```sh
 cd docs-site
