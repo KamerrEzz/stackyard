@@ -448,3 +448,150 @@ document, it's preserved below, organized by file.
   engine's perspective until that stream is fully read. Skipping the
   `io.Copy(io.Discard, rc)` drain (or returning early) would leave the pull
   racing with whatever tries to use the image next.
+
+---
+
+## Session 3 — 2026-07-02 — Phase 2 wave 1 (parallel)
+
+Five tasks ran concurrently, each scoped to a disjoint file set to avoid
+collisions: MySQL orchestration (2.1), MongoDB orchestration (2.2), Redis
+orchestration (2.3), profile duplicate/rename/delete UI (2.5), and Docker
+stats polling (2.7). All five landed; `go build ./...`, `go vet ./...`,
+`gofmt -l .`, `go test ./...`, `go test -tags=integration ./internal/docker/...`
+(run twice to check for flakiness), and `pnpm run build` are all green.
+
+### Real bug found and fixed: test container-ID collisions
+
+Each engine's integration test hardcodes a `testProfileID`/`testServiceID`
+constant to build deterministic Docker resource names
+(`stackyard-profile-<id>`, `stackyard-service-<id>`). Three of the five
+parallel tasks independently picked `999002` (colliding with the
+pre-existing `lifecycle_integration_test.go`), and a later pick collided
+with Redis's `999003` too — there is no central registry for these IDs,
+just convention, so parallel tasks with no visibility into each other's
+choices collided. Fixed by assigning each file a unique ID:
+`compose_integration_test.go`=999001, `lifecycle_integration_test.go`=999002,
+`redis_integration_test.go`=999003, `mysql_integration_test.go`=999004,
+`mongodb_integration_test.go`=999005. **Whoever adds the next
+Docker-integration test file must pick 999006 or higher** — there is
+still no automated guard against this, just this note.
+
+### MySQL (2.1) — `internal/docker/mysql.go`
+
+- Container port `3306/tcp`, data dir `/var/lib/mysql`, image from
+  `svc.ImageTag` (e.g. `mysql:8`).
+- **Credential mapping** (`storage.Service` has one username/password slot
+  shared across all 4 engines, but MySQL's official image distinguishes a
+  mandatory root account from an optional regular user): if
+  `svc.Username` is nil/empty/exactly `"root"`, connect as root — only
+  `MYSQL_ROOT_PASSWORD` and `MYSQL_DATABASE` are set (the image rejects
+  `MYSQL_USER=root`). Otherwise, `svc.Username`/`PasswordEncrypted` map to
+  `MYSQL_USER`/`MYSQL_PASSWORD`, and `PasswordEncrypted` is *also* reused
+  as `MYSQL_ROOT_PASSWORD` since the image requires a root password
+  unconditionally and `Service` has no separate root-password field —
+  practical effect: root and the regular user share one password.
+  `MySQLConnectionString`'s fallbacks mirror this (nil username → `"root"`,
+  nil db → `"mysql"`).
+
+### MongoDB (2.2) — `internal/docker/mongodb.go`
+
+- Container port `27017/tcp`, data dir `/data/db`, image from
+  `svc.ImageTag` (e.g. `mongo:7`).
+- `MONGO_INITDB_DATABASE` is **omitted entirely** when `svc.DBName` is
+  nil/empty (not defaulted) — unlike Postgres, Mongo doesn't need a
+  database name upfront; databases are created lazily on first write.
+- `MongoConnectionString`'s fallback path segment is **`"admin"`**, not a
+  cosmetic placeholder — it's the actual database the root user
+  (`MONGO_INITDB_ROOT_USERNAME`) authenticates against, so the generated
+  string is functionally correct for login.
+- **Test-environment gotchas worth knowing**: the official `mongo:7`
+  image briefly runs a no-auth `mongod` for init setup, then restarts as
+  the real auth-enabled `mongod` — the TCP port opens before this
+  finishes, so a test that stops the container too early can hit a
+  spurious "No such container." Also, `ContainerRemove(Force: true)` can
+  race with a container's `RestartPolicyUnlessStopped` on this
+  Windows/Docker Desktop setup, producing transient "removal already in
+  progress"/volume-in-use errors — the same `RestartPolicy` exists in the
+  Postgres container spec already, so this is a latent risk there too,
+  just unobserved so far. Retry-with-timeout helpers in
+  `mongodb_integration_test.go` work around this for test cleanup; product
+  code that ever needs to force-remove a container/volume synchronously
+  should expect the same race.
+
+### Redis (2.3) — `internal/docker/redis.go`
+
+- Container port `6379/tcp`, data dir `/data`, image from `svc.ImageTag`
+  (e.g. `redis:7-alpine`).
+- **No-auth when `PasswordEncrypted` is nil.** Redis's official image has
+  no `REDIS_PASSWORD` env var; auth requires overriding `Cmd` to
+  `redis-server --requirepass <password>`. With no password set, the
+  container runs with zero authentication — a real security-vs-convenience
+  tradeoff (an unauthenticated Redis on a bound host port is reachable by
+  anything on the machine/LAN that can hit that port) worth revisiting
+  before ship, even though it matches the "local dev, zero friction" ethos
+  Postgres's nil-credentials path already has.
+- `svc.DBName` and `svc.Username` are both fully ignored for Redis (Redis
+  "databases" are numbered indices selected per-connection, not
+  provisioned at container-start; Redis has no username concept at all).
+- `RedisConnectionString` omits the trailing `/db` segment entirely
+  (rather than defaulting to `/0`) so the string never implies a database
+  selection Stackyard didn't actually make.
+
+### Profile duplicate/rename/delete (2.5) — `app.go` + `EnvironmentManagerView.tsx`
+
+- **Duplicate naming**: `"<original> (copy)"`, falling back to
+  `"(copy 2)"`, `"(copy 3)"`, ... on collision (`profiles.name` is
+  `UNIQUE`).
+- **Duplicate volume names are regenerated, not copied verbatim** —
+  copying `VolumeName` as-is would make the duplicate silently mount the
+  *same* Docker volume as its source (permanent, silent data sharing, not
+  just a start-time port conflict like the host-port field, which IS left
+  as-is since task 1.5's `CheckProfilePortConflict` already handles that).
+  New volume name follows `CreateProfile`'s existing convention:
+  `stackyard-vol-profile-<newID>-<engine>`.
+- **Delete-while-running is refused, not silently orphaned.**
+  `DeleteProfile` requires `GetProfileStatus` to read exactly `"stopped"`
+  before deleting SQLite rows; `"running"`/`"partial"`/`"unknown"`
+  (including when the Docker status check itself errors) all block
+  deletion with a clear message — an orphaned running container with no
+  UI reference left is worse than an explicit "stop it first" error. The
+  decision logic itself (`deleteProfileGuardError`) is a pure,
+  dependency-free function so it's unit-tested without live Docker; the
+  one Docker touchpoint (`GetProfileStatus`) is read-only — `DeleteProfile`
+  performs zero Docker *mutations*, matching spec.md §3.1's volume
+  guarantee exactly. If a stricter "zero Docker calls whatsoever" reading
+  is ever wanted, the guard would need to move entirely into the frontend
+  using the status it already polls for display.
+- Delete confirmation is a native `window.confirm(...)` whose copy states
+  explicitly that Docker volumes are NOT deleted and points at "Reset
+  volume" (task 2.6, not yet built) as the actual data-erasing action; the
+  Delete button is also disabled unless status is `"stopped"`. Rename is
+  an inline edit (click → text input, Enter/Escape, Save/Cancel) — no
+  modal library.
+
+### Docker stats polling (2.7) — `internal/docker/stats.go`
+
+- Used `ContainerStatsOneShot` (not `ContainerStats(..., stream=false)`)
+  — the SDK's purpose-built single-snapshot call skips a daemon-side
+  cgroup-priming delay that the streaming variant incurs even in
+  non-stream mode, which matters for spec.md §3.5's ≤2s refresh target
+  once polling many containers.
+- **CPU% formula** (the same one `docker stats` itself uses):
+  `cpuPercent = (cpuDelta / systemDelta) * onlineCPUs * 100`, where
+  `cpuDelta`/`systemDelta` are deltas between the current and previous
+  cgroup CPU counters. Computed in `float64` specifically to avoid
+  unsigned-integer underflow wraparound on a counter reset; `cpuDelta <= 0`
+  or `systemDelta <= 0` both return `0` rather than dividing by zero or
+  reporting nonsense. `onlineCPUs` falls back from `online_cpus` (Linux
+  cgroup-specific) to `len(percpu_usage)` to a hardcoded `1`.
+- **Memory formula**: `MemoryUsageBytes = mem.Usage - inactive_file_cache`
+  (tries cgroup v1's `total_inactive_file`, then cgroup v2's
+  `inactive_file`) — matches `docker stats`, which subtracts reclaimable
+  page-cache pages so the number reflects real application memory
+  pressure, not incidental disk cache.
+- **Batch polling (`StatsForContainers`) returns no top-level error** —
+  only a `map[string]ContainerStatsResult`, where each entry independently
+  carries its own `Usage`/`Err`. A container that's gone or errors doesn't
+  block the batch or get silently dropped from the map; task 2.8's
+  dashboard can tell "this service errored" apart from "this service was
+  never requested," which a silently-omitted entry would obscure.
