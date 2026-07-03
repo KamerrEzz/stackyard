@@ -1,10 +1,12 @@
 import {useCallback, useEffect, useRef, useState} from 'react'
 import {
     CloseMongoSession,
+    CloseRedisSession,
     ConnectUsingSavedConnection,
     DeleteConnection,
     ListConnections,
     OpenMongoConnection,
+    OpenRedisConnection,
     ParseConnectionURL,
     SaveConnection,
     TestConnection,
@@ -13,6 +15,7 @@ import type {main, storage} from '../../../wailsjs/go/models'
 import MongoDocumentView from './MongoDocumentView'
 import QueryEditor, {type QueryEditorHandle} from './QueryEditor'
 import QueryHistoryPanel from './QueryHistoryPanel'
+import RedisKeyBrowser from './RedisKeyBrowser'
 import SnippetsPanel from './SnippetsPanel'
 import {resolveSnippetFilterScope} from './snippetFilterLogic'
 import {findMostRecentCompatibleConnection, resolveRunSnippetTarget, resolveSnippetConnectionSource} from './snippetRunLogic'
@@ -69,20 +72,34 @@ interface MongoTab {
 }
 
 /**
- * `DbClientView`'s tab strip is one unified list discriminated by `kind`,
- * not a parallel Mongo-only tab list next to the SQL one (tasks.md 5.1's
- * "map its query model onto the existing tab/connection shell"). `TabBar`
- * and `tabState`'s `openTab`/`closeTab` both only ever cared about a tab's
- * `id`/`label` — neither needed a single line of change to support a mixed
- * tab strip, since they were already engine-agnostic. A unified strip also
- * matches spec.md's goal 2 directly ("single, coherent UI — no per-engine
- * tool switching"): a user with both a Postgres query tab and a Mongo
- * browsing tab open sees one tab row, not two separate UIs to juggle. The
- * alternative (a second, Mongo-only tab list/strip) was considered and
- * rejected for that reason — it would have been less code here, but it
- * fragments exactly the experience goal 2 calls out.
+ * A Redis-connected tab (tasks.md 6.2-6.4), the same shape and same
+ * own-session-per-tab lifecycle as `MongoTab` (see `RedisKeyBrowser`'s doc
+ * comment for why it opens/closes its own session rather than being handed
+ * one).
  */
-type DbClientTab = SqlTab | MongoTab
+interface RedisTab {
+    kind: 'redis'
+    id: string
+    label: string
+    fields: main.ConnectionFormFields
+}
+
+/**
+ * `DbClientView`'s tab strip is one unified list discriminated by `kind`,
+ * not a parallel per-engine tab list (tasks.md 5.1's "map its query model
+ * onto the existing tab/connection shell", extended identically to Redis by
+ * tasks.md 6.2). `TabBar` and `tabState`'s `openTab`/`closeTab` both only
+ * ever cared about a tab's `id`/`label` — neither needed a single line of
+ * change to support a three-way mixed tab strip, since they were already
+ * engine-agnostic. A unified strip also matches spec.md's goal 2 directly
+ * ("single, coherent UI — no per-engine tool switching"): a user with a
+ * Postgres query tab, a Mongo browsing tab, and a Redis browsing tab open
+ * sees one tab row, not three separate UIs to juggle. The alternative (a
+ * separate tab list per engine) was considered and rejected for that reason
+ * — it would have been less code here, but it fragments exactly the
+ * experience goal 2 calls out.
+ */
+type DbClientTab = SqlTab | MongoTab | RedisTab
 
 function labelForFields(fields: main.ConnectionFormFields): string {
     return `${fields.Engine}@${fields.Host}:${fields.Port}`
@@ -158,6 +175,12 @@ function DbClientView() {
 
     const addMongoTab = useCallback((fields: main.ConnectionFormFields, label: string) => {
         const tab: DbClientTab = {kind: 'mongo', id: nextTabId(), label, fields}
+        setTabs((prev) => openTab(prev, tab).tabs)
+        setActiveTabId(tab.id)
+    }, [])
+
+    const addRedisTab = useCallback((fields: main.ConnectionFormFields, label: string) => {
+        const tab: DbClientTab = {kind: 'redis', id: nextTabId(), label, fields}
         setTabs((prev) => openTab(prev, tab).tabs)
         setActiveTabId(tab.id)
     }, [])
@@ -262,6 +285,8 @@ function DbClientView() {
                 applyParsedFields(fields)
                 if (fields.Engine === 'mongodb') {
                     addMongoTab(fields, name)
+                } else if (fields.Engine === 'redis') {
+                    addRedisTab(fields, name)
                 } else {
                     addSqlTab(fields, name)
                 }
@@ -270,7 +295,7 @@ function DbClientView() {
                 setSavedConnectionsError(String(err))
             }
         },
-        [addMongoTab, addSqlTab, applyParsedFields, refreshSavedConnections],
+        [addMongoTab, addRedisTab, addSqlTab, applyParsedFields, refreshSavedConnections],
     )
 
     const handleReplayEntry = useCallback(
@@ -359,21 +384,22 @@ function DbClientView() {
     /**
      * The connection form's single primary action button, for every engine
      * (tasks.md 5.1's "map onto the existing tab/connection shell," extended
-     * here to the browsing UI): for Postgres/MySQL it runs `TestConnection`
-     * (a throwaway reachability check, connection closed immediately after)
-     * and then opens a SQL tab. MongoDB has no equivalent throwaway check —
-     * `TestConnection`/`newTestEngine` (app.go) explicitly don't support it
-     * yet (see docs/STATE.md Session 8) — so for MongoDB this calls
-     * `OpenMongoConnection` directly instead, as its own throwaway
-     * reachability check, and closes that session again immediately
+     * here to the browsing UI, then again by tasks.md 6.2 for Redis): for
+     * Postgres/MySQL it runs `TestConnection` (a throwaway reachability
+     * check, connection closed immediately after) and then opens a SQL tab.
+     * MongoDB and Redis have no equivalent throwaway check —
+     * `TestConnection`/`newTestEngine` (app.go) explicitly don't support
+     * either yet (see docs/STATE.md Sessions 8 and 10) — so both call their
+     * own `Open*Connection` directly instead, as their own throwaway
+     * reachability check, and close that session again immediately
      * afterward: the tab itself opens its own independent, longer-lived
-     * session on mount (see `MongoDocumentView`'s doc comment for why it
-     * isn't handed this one). A failure to close the throwaway session is
-     * swallowed — it doesn't affect whether Connect itself succeeded, and
-     * the session was only ever going to be used for this one Ping anyway.
-     * Button label/state (`testState`/`testMessage`) is shared across both
-     * branches so the UI doesn't need a second parallel set of state just
-     * for the engine difference.
+     * session on mount (see `MongoDocumentView`'s/`RedisKeyBrowser`'s doc
+     * comments for why neither is handed this one). A failure to close the
+     * throwaway session is swallowed — it doesn't affect whether Connect
+     * itself succeeded, and the session was only ever going to be used for
+     * this one Ping anyway. Button label/state (`testState`/`testMessage`)
+     * is shared across all three branches so the UI doesn't need parallel
+     * state just for the engine difference.
      */
     const handleTestConnection = useCallback(async () => {
         setTestState('testing')
@@ -395,6 +421,12 @@ function DbClientView() {
                 setTestState('success')
                 setTestMessage('Connected successfully.')
                 addMongoTab(fields, labelForFields(fields))
+            } else if (fields.Engine === 'redis') {
+                const throwawaySessionID = await OpenRedisConnection(fields)
+                await CloseRedisSession(throwawaySessionID).catch(() => undefined)
+                setTestState('success')
+                setTestMessage('Connected successfully.')
+                addRedisTab(fields, labelForFields(fields))
             } else {
                 await TestConnection(fields)
                 setTestState('success')
@@ -405,7 +437,7 @@ function DbClientView() {
             setTestState('error')
             setTestMessage(String(err))
         }
-    }, [addMongoTab, addSqlTab, database, engine, host, paramRows, password, port, username])
+    }, [addMongoTab, addRedisTab, addSqlTab, database, engine, host, paramRows, password, port, username])
 
     const handleNewTab = useCallback(() => {
         setActiveTabId(null)
@@ -584,7 +616,7 @@ function DbClientView() {
                         disabled={testState === 'testing' || host.trim().length === 0}
                         className="rounded bg-brass-600 px-4 py-2 text-sm font-medium text-ink-950 transition-colors hover:bg-brass-500 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                        {engine === 'mongodb'
+                        {engine === 'mongodb' || engine === 'redis'
                             ? testState === 'testing'
                                 ? 'Connecting…'
                                 : 'Connect'
@@ -685,8 +717,10 @@ function DbClientView() {
                                     fields={tab.fields}
                                     initialQuery={tab.initialQuery}
                                 />
-                            ) : (
+                            ) : tab.kind === 'mongo' ? (
                                 <MongoDocumentView fields={tab.fields} />
+                            ) : (
+                                <RedisKeyBrowser fields={tab.fields} />
                             )}
                         </div>
                     ))}

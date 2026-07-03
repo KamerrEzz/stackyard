@@ -138,9 +138,9 @@ code surface with the editable-grid work above.
 
 - [x] **6.1** Implement `Engine` for Redis (`go-redis/redis`); key-space
       scan (pattern-based filtering, e.g. `session:*`).
-- [ ] **6.2** Per-type detail views: string, hash, list, set, sorted set.
-- [ ] **6.3** TTL display and edit (set/persist/change) per key.
-- [ ] **6.4** Key rename and delete with confirmation.
+- [x] **6.2** Per-type detail views: string, hash, list, set, sorted set.
+- [x] **6.3** TTL display and edit (set/persist/change) per key.
+- [x] **6.4** Key rename and delete with confirmation.
 
 ## Phase 7 — Import / Export
 

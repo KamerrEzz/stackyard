@@ -2318,3 +2318,194 @@ the next one; **999023+** is free as of this session.
 Next: bundle 6.2-6.4 (per-type detail views, TTL display/edit, key
 rename/delete) into the frontend, using the corrected
 `ScanKeysResult`/`RedisSetPage` struct-based signatures above.
+
+---
+
+## Session 11 — Phase 6 closes: Redis key browser frontend (6.2-6.4)
+
+Pure frontend work — no Go bound method was missing or changed. Every
+call listed in this session's brief (`ScanRedisKeys`, `GetRedisKeyType`,
+`GetRedisString`/`SetRedisString`, `GetRedisHash`/`SetRedisHash`,
+`GetRedisList`/`PushRedisList`/`SetRedisListElement`, `GetRedisSet`/
+`AddRedisSetMembers`/`RemoveRedisSetMembers`, `GetRedisSortedSet`/
+`AddRedisSortedSetMembers`/`RemoveRedisSortedSetMembers`, `GetRedisTTL`/
+`SetRedisTTL`/`PersistRedisKey`, `RenameRedisKey`, `DeleteRedisKeys`) was
+already correctly bound and already reflected in
+`frontend/wailsjs/go/main/App.d.ts`/`models.ts` from task 6.1 — confirmed
+by reading both files before writing any frontend code, not assumed.
+
+### New files
+
+- `frontend/src/modules/db-client/redisKeyHelpers.ts` +
+  `redisKeyHelpers.test.ts` (24 tests): `formatTTL` (negative-nanoseconds
+  → "No expiry", matching `redis.Engine.TTL`'s `-1` sentinel;
+  `GetRedisTTL`'s TS binding surfaces `time.Duration` as its raw int64
+  nanosecond count per `SetRedisTTL`'s own doc comment, so this formats
+  nanoseconds, not seconds), `applyCursorPage`/`canLoadMore` (shared
+  cursor-pagination state for both key-scan and set-member-scan, since
+  both are SCAN-family calls with an identical "0 cursor = done"
+  contract), `validateHashJSON` (bulk hash-edit validation, rejecting a
+  non-string field value with the offending field name), `parseLineValues`
+  (append/add textarea → string array), `parseScoreInput` (sorted-set
+  score parsing).
+- `frontend/src/modules/db-client/RedisValueViews.tsx`: five exported
+  per-type components — `RedisStringValue`, `RedisHashValue`,
+  `RedisListValue`, `RedisSetValue`, `RedisSortedSetValue`.
+- `frontend/src/modules/db-client/RedisKeyDetail.tsx`: per-key
+  orchestrator — resolves type via `GetRedisKeyType`, renders TTL
+  display/set/persist, rename, delete-this-key, and dispatches to the
+  matching view above.
+- `frontend/src/modules/db-client/RedisKeyBrowser.tsx`: the Redis tab's
+  top-level content — pattern-driven `ScanRedisKeys` with real cursor
+  "Load more," a checkbox-multi-select key list, multi-key delete
+  (`window.confirm`-gated), and the open key's `RedisKeyDetail` alongside
+  it.
+
+### Modified
+
+- `frontend/src/modules/db-client/DbClientView.tsx`: `DbClientTab` is now
+  a three-way union (`SqlTab | MongoTab | RedisTab`), extending the exact
+  pattern `MongoTab` established (tasks.md 5.1) — `TabBar`/`tabState.ts`
+  needed zero changes, confirmed engine-agnostic as the brief expected.
+  `handleTestConnection` gained a `redis` branch mirroring the `mongodb`
+  branch exactly: `OpenRedisConnection` as a throwaway reachability check
+  (closed immediately), since `TestConnection`/`newTestEngine` (app.go)
+  still returns "not yet supported" for Redis (confirmed by reading
+  `app.go` directly, not assumed) — the tab itself opens its own
+  independent, longer-lived session on mount, same as
+  `MongoDocumentView`. `handleLoadConnection` gained the same `redis`
+  branch. Button label now reads "Connect"/"Connecting…" for both
+  `mongodb` and `redis` (previously `mongodb`-only).
+
+### Judgment calls made this session
+
+- **Hash editing: bulk JSON, not per-field** — mirrors the Mongo
+  whole-document-JSON-edit precedent the brief pointed at, and also maps
+  one-to-one onto `SetRedisHash`'s own bulk-`HSET` shape (no per-field
+  Go method exists to call anyway). Documented directly in the UI (not
+  just in code comments): removing a field from the JSON text and saving
+  does NOT delete it in Redis, since `HSET` only adds/overwrites fields
+  — a real, permanent limitation of the existing bound method, not a
+  frontend bug. Deleting the whole key is the only way to clear a field.
+- **Set/sorted-set editing: simple add-one/remove-one, NOT diffing** —
+  the brief offered this as an explicit choice. Diffing was rejected
+  specifically because both are paginated (`SSCAN`/windowed `ZRANGE`):
+  unlike Mongo's whole-document edit (which always holds the complete
+  document), a set/sorted-set view only ever holds one page of a
+  potentially much larger collection, so computing "removed = old page
+  minus new page" and calling `RemoveFromSet`/`RemoveFromSortedSet`
+  against it could silently target members that were never loaded to
+  begin with. `AddRedisSetMembers`/`RemoveRedisSetMembers`/
+  `AddRedisSortedSetMembers`/`RemoveRedisSortedSetMembers` are still the
+  bulk bound methods — this UI just always calls them with a one-element
+  array.
+- **List editing**: per-index in-place edit (`SetRedisListElement`) plus
+  a bulk multi-line-textarea append (`PushRedisList`) — append has no
+  diffing question at all since pushing is purely additive.
+- **TTL display convention**: any negative nanosecond value (not only
+  exactly `-1`) reads as "No expiry," so a future sentinel change on the
+  Go side degrades to the same safe label instead of a raw negative
+  number leaking into the UI.
+- **Cursor pagination (scan + set)**: `hasScanned` is tracked
+  independently of `cursor`, specifically because `cursor === 0` means
+  two different things depending on whether a scan has run yet ("not
+  started" vs. "just finished") — collapsing them into one boolean would
+  have made "Load more" incorrectly enabled/disabled at the wrong time.
+  Covered directly by `redisKeyHelpers.test.ts`'s
+  `applyCursorPage`/`canLoadMore` tests.
+- **File split**: one `RedisKeyDetail.tsx` orchestrator (type resolution,
+  TTL, rename, delete — none of which differ by value type) plus one
+  `RedisValueViews.tsx` holding all five typed sub-views, rather than five
+  separate per-type files. Chosen over Mongo's finer split
+  (`MongoDocumentTree.tsx`/`MongoJSONEditor.tsx` as separate files)
+  because the five Redis views are much smaller individually (a fetch +
+  one editing affordance each) and share import/pagination patterns
+  tightly enough that five separate files would have been mostly
+  boilerplate-per-file rather than a real separation of concerns.
+
+### Testing
+
+- `pnpm run test` (Vitest): 172/172 passing across 12 files, 24 of them
+  new (`redisKeyHelpers.test.ts`).
+- `npx tsc --noEmit` and `pnpm run build`: both clean, zero errors (the
+  only build output is pre-existing Monaco/Mermaid vendor CSS warnings,
+  unrelated to this change — confirmed present before this session's
+  edits too).
+- No Go file was touched, so `go build ./...`/`go vet ./...`/
+  `gofmt -l .`/`go test ./...` were run only to confirm zero regressions
+  — all clean, as expected.
+
+### Manual verification — what was actually run, and the one real gap
+
+**No Playwright/browser-automation tool was available to this particular
+agent invocation** — same situation Session 3's multi-engine-wizard task
+flagged for the same reason. A true UI click-through (open the app,
+click through the key browser) was not possible this session; this is a
+real gap against the brief's request, not a silent skip — flagged
+explicitly here, same as Session 3 did.
+
+What WAS run, against a real live Redis, standing in for it as far as
+possible without a browser:
+
+- `go test -tags=integration ./internal/dbengine/redis/...` — the
+  existing engine-level integration test (task 6.1) re-confirmed against
+  a fresh live container: Ping, ScanKeys, and every per-type get/set,
+  TTL, rename, and delete round-trip all passed; container/volume/network
+  cleaned up automatically by the test itself.
+- A throwaway `//go:build manualverify`-tagged test file (written to the
+  repo root, run via `go test -tags=manualverify`, then deleted — never
+  committed) that called the exact `*App` bound methods the new frontend
+  code calls (not the lower-level `redis.Engine` methods the existing
+  integration test already covers) against a Redis container started via
+  a plain `docker run -d --name stackyard-manual-verify-redis -p
+  16399:6379 redis:7-alpine` — deliberately NOT through this app's own
+  `CreateProfile`/`SaveConnection` flow, per this session's explicit
+  instruction to avoid accumulating orphaned app-data debris from manual
+  tests. Confirmed for real: `ScanRedisKeys`'s pattern filter (seeded
+  `session:1`/`session:2` matching `session:*` plus a non-matching
+  `other:1`, confirmed the non-match was excluded and the cursor loop
+  terminated), all 5 types' get/set round-trips, `SetRedisTTL` →
+  `GetRedisTTL` → `PersistRedisKey` → `GetRedisTTL` again confirming the
+  `-1` no-expiry sentinel, `RenameRedisKey`'s collision guard firing a
+  real `ErrKeyExists`-wrapped error before a successful rename, and
+  `DeleteRedisKeys` removing multiple keys in one call (confirmed via a
+  post-delete `GetRedisKeyType` returning `"none"`).
+- Docker cleanup confirmed via `docker ps -a --filter
+  name=stackyard-manual-verify-redis` (empty) after `docker stop`/
+  `docker rm`; the scratch test file was deleted and `go build ./...`/
+  `go test ./...` re-run clean afterward to confirm removing it broke
+  nothing.
+
+**Gap closed**: the Playwright click-through flagged above was done
+immediately after this section was written, once a browser-automation
+tool became available. Real live verification against a seeded
+`redis:7-alpine` container (plain `docker run`, not `CreateProfile`),
+driven via `wails dev` at `localhost:34115`:
+- Pasted `redis://localhost:27100/0` — engine auto-detected as Redis,
+  "Connect" opened a tab labeled `redis@localhost:27100`.
+- Unfiltered scan showed all 6 seeded keys (one of each of the 5 types
+  plus a non-matching `other:1`); applying pattern `session:*` correctly
+  excluded `other:1` — the filter genuinely narrows results, not just
+  cosmetically.
+- All 5 type views rendered real data correctly: string (`hello world`
+  with its TTL as a human-readable "56m 42s", not a raw duration), hash
+  (`name: Alice`, `role: admin`), list (`job-a`/`job-b`/`job-c`), set
+  (`red`/`green`/`blue`), sorted set (`alice: 100`, `bob: 200` with
+  per-member Remove buttons).
+- TTL: a key with no expiry correctly showed "No expiry"; setting a TTL
+  of 120s showed it counting down (~2m); clicking Persist correctly
+  returned it to "No expiry".
+- Rename: `session:profile:1` → `session:profile:renamed` — old key
+  gone from the list, new key present.
+- Delete: clicking "Delete key" triggered a real confirmation dialog
+  (`Delete key "session:queue:1"? This cannot be undone.`); accepting it
+  removed the key from the list.
+- Cleaned up: container removed, `wails dev` process tree killed, `pnpm
+  run build` re-run afterward (same gitignored-`dist/` quirk as
+  Session 9's manual pass — expected, not a regression).
+
+**Phase 6 (Redis, tasks 6.1-6.4) is now fully implemented and manually
+verified end-to-end**, closing Module 2's DB Client feature set for all
+4 engines. One real Wails IPC bug was caught and fixed this phase (the
+3-output bound-method constraint documented above). Next: Phase 7
+(Import/Export — CSV, JSON, SQL dump), tasks 7.1-7.4.
