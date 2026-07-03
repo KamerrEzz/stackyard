@@ -300,6 +300,62 @@ This completes **Phase 6 — Redis** (tasks 6.1-6.4) and, together with Phases
 3/4/4.5/5, delivers all of **Module 2 — DB Client** (spec.md §4) for every
 engine: Postgres, MySQL, MongoDB, and Redis.
 
+- Export (`internal/export/`, `export.go`): CSV/JSON/SQL-dump export for
+  both a full table and the current query result, with a user-selectable
+  scope. A shared, engine-agnostic formatting layer
+  (`ToCSV`/`ToJSON`/`ToSQLDump`, taking only `(columnNames []string, rows
+  [][]any)`, no DB dependency) feeds two entry points: full-table export
+  pages through `Engine.Exec` directly at 1000 rows/page (deliberately
+  bypassing `BrowseTableRows` to avoid spamming `query_history` with one
+  entry per internal page), and current-query-result export reuses data
+  the frontend already holds from `RunQuery`/`RunMultiStatementQuery` (Go
+  keeps no last-result cache, avoiding a second cache that could drift
+  from what's on screen). CSV's NULL-vs-empty-string convention is
+  exactly Postgres's own `COPY ... CSV` convention (unquoted-empty field =
+  NULL, quoted `""` = empty string), chosen because it's unambiguous to
+  reverse on import; JSON needs no such convention since `null`/`""` are
+  already distinguishable via JSON's own grammar. SQL dump is scoped to
+  full-table export only (a query result can join multiple tables with no
+  single `CREATE TABLE` target), with per-engine `CREATE TABLE` type
+  mapping (Postgres's `information_schema.columns.data_type` is valid DDL
+  as-is; MySQL needs an added `COLUMN_TYPE` lookup for length/precision)
+  and per-engine escaping (single quotes doubled for both; backslashes
+  additionally escaped for MySQL only, matching its default `sql_mode` so
+  a trailing backslash can't swallow the closing quote), INSERTs batched
+  at 500 rows/statement. Round-trip tested for real: a dump generated
+  from a live seeded table was executed against a genuinely separate
+  fresh container of the same engine and the resulting rows compared to
+  the source via exact string equality, including an explicit
+  NULL-vs-`''` fidelity check — verified for both Postgres and MySQL, zero
+  Docker leftovers after. File save uses `runtime.SaveFileDialog`
+  (`ExportControls.tsx`), first use in this codebase (tasks 7.1-7.3).
+- Import (`internal/importdata/`, `import.go`, `ImportDialog.tsx`):
+  CSV/JSON import with pre-commit validation against the target table's
+  columns, collecting every mismatch across the whole file before
+  reporting rather than stopping at the first one, and a hard block on
+  any mismatch — no partial commits. `ImportFile` fully re-validates from
+  scratch immediately before writing, regardless of any prior
+  `ValidateImportFile` call, so there's no window where a stale
+  validation result could be trusted. Uses a bulk single-statement INSERT
+  (not N calls to `InsertTableRow`), atomic on both Postgres and
+  MySQL/InnoDB, so abort-before-write holds even against DB-level
+  constraints (UNIQUE/CHECK) the validator itself can't see. A custom CSV
+  tokenizer is used instead of stdlib `encoding/csv`, since the standard
+  library discards the quoting information needed to distinguish an
+  unquoted-empty NULL from a quoted-empty `""` string on the way back in.
+  Type-plausibility validation categorizes `ColumnInfo.DataType` against
+  Postgres/MySQL's `information_schema` vocabulary into
+  integer/numeric/boolean/datetime/text buckets (unknown types always
+  pass rather than being rejected); a known gap is that MySQL reports
+  `BOOLEAN` as `tinyint`, indistinguishable from a genuine tinyint column,
+  so only `0`/`1` passes there, not `"true"`/`"false"`. Verified for real:
+  an integration test seeded a file with one deliberately bad row among
+  several good ones and confirmed via `SELECT COUNT(*)` that zero rows
+  landed, not "all but the bad one" (task 7.4).
+
+This completes **Phase 7 — Import/Export** (tasks 7.1-7.4), cutting
+across every engine already built.
+
 ### Fixed
 
 - MongoDB auth/`authSource` conflict: `MongoConnectionString`'s database-path
@@ -398,6 +454,12 @@ engine: Postgres, MySQL, MongoDB, and Redis.
   needed the struct. **Standing rule for any future bound method: never
   return more than 2 values (data + error) — wrap additional data in a
   struct instead** (task 6.1).
+- `isImportableFilePath` dead-code cleanup: this file-extension check was
+  written and unit-tested during task 7.4 but never actually called from
+  anywhere. Wired into `ImportDialog.tsx`'s file-pick handler as a
+  defensive client-side extension check — the OS file dialog already
+  filters by extension, but a user can override that filter to "All
+  files," so the helper now actually gates the UI instead of being inert.
 
 ### Changed
 
