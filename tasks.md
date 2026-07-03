@@ -174,7 +174,7 @@ code surface with the editable-grid work above.
       generic/AI-template" bar — typography, spacing, dark-mode contrast.
 - [ ] **9.3** Windows installer build via Wails' packaging; smoke-test a
       clean install on a machine without the dev toolchain.
-- [ ] **9.4** Dogfood run: replace your own next new-project setup with
+- [x] **9.4** Dogfood run: replace your own next new-project setup with
       Stackyard end-to-end (spec.md §7 success definition); log friction
       points to `docs/STATE.md` as a v1.1 backlog, not mid-flight scope
       creep.

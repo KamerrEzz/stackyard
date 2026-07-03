@@ -3777,3 +3777,107 @@ plainly against spec.md §5 — including the one finding (full-tree idle
 memory) that does not cleanly favor the "lighter than Electron"
 narrative. No code fix was made; the reasoning for why none was
 warranted is recorded above rather than left implicit.
+
+---
+
+## Session 19 — Phase 9 closes: dogfood run (9.4)
+
+Driven personally via `wails dev` + Playwright, end to end, entirely
+through the app's own UI (no `docker`/`psql` CLI, no Docker Desktop) —
+exactly spec.md §7's success definition: create a profile, start an
+environment, connect via the DB Client, run and save a few snippets,
+tear it down.
+
+### The flow, step by step, all genuinely exercised
+
+1. **Environments → "my-side-project"**: named the profile (using the
+   spec's own placeholder example verbatim), checked PostgreSQL,
+   clicked "Create & Start" — 3 clicks total, satisfying spec.md §3.2's
+   3-click criterion. Reached "Running" state in **~1.6s** after the
+   create click (~3.2s including the initial tab navigation) — a real,
+   fast Docker orchestration round trip, not a mocked/optimistic UI
+   state.
+2. **Connect via DB Client**: pasted a connection URL, "Test
+   connection" → "Connected successfully," named and saved it, "Load"
+   opened a real query-editor tab.
+3. **Ran real queries**: `CREATE TABLE notes (...)`, `INSERT INTO
+   notes ...`, `SELECT * FROM notes` — each executed against the live
+   container, results genuinely reflecting the database's actual state
+   (confirmed the inserted row came back, not a canned response).
+   Query History correctly logged all 4 statements with real
+   timings/row-counts once refreshed.
+4. **Saved and ran a snippet**: created "list all notes" (global,
+   Postgres-scoped), clicked "Run" — it loaded into the current tab's
+   editor (task 4.7's actual designed behavior: Run-snippet loads, it
+   doesn't auto-execute), then "Run query" executed it and returned the
+   real row.
+5. **Tore down**: Stop → Delete, with an honest confirmation dialog
+   explaining that deleting the profile does NOT delete its Docker
+   volume (data preserved unless "Reset volume" is used separately) —
+   confirmed the profile left the list.
+
+### One real, if narrow, methodology trap — not a Stackyard bug
+
+My first connection attempt failed with a genuine Postgres auth error
+("password authentication failed"). Root cause: I hand-typed a
+connection string guessing at an empty password rather than using the
+actual "Copy connection string" button (unavailable to a headless
+Playwright session — no OS clipboard access) — the real credentials
+(`postgres`/`postgres`) were only visible by querying `ListProfiles`
+directly. **This was my own test-tooling limitation, not an app
+defect** — a real user clicking "Copy connection string" would never
+hit this. Worth remembering for future sessions: don't hand-guess
+credentials when testing connection flows headlessly: query the actual
+stored service record instead.
+
+### Friction points found — logged as v1.1 backlog, not fixed mid-flight (per this task's own instruction)
+
+- **Saved connections have no uniqueness guard on name.** Running the
+  same "Save connection" flow multiple times (as my own repeated test
+  scripts did) creates multiple identical-looking rows with the same
+  name and connection string. Not a correctness bug — nothing breaks —
+  but a real rough edge a user could hit by double-clicking "Save" or
+  re-saving after a typo-fix. **v1.1 candidate**: warn or dedupe on an
+  exact name+connection-string match before inserting a new row.
+- **The saved-connection list's "click the row text" vs. "click Load"
+  distinction is not obvious.** Both actions open a tab in practice
+  (confirmed), but a first-time user has no visual cue that the row
+  itself is clickable vs. needing the explicit "Load" button — a minor
+  discoverability gap, not a functional one. **v1.1 candidate**: either
+  make only "Load" open a session (remove row-click ambiguity) or add a
+  visible hover/focus affordance to the whole row.
+- **Query History requires a manual "Refresh" click** to show queries
+  run moments ago in the same session — consistent with this project's
+  deliberate no-live-polling design elsewhere (Schema Diagram's
+  "Regenerate," e.g.), so NOT treated as a bug, but worth a v1.1 look at
+  whether a subtle "N new" badge would reduce the friction of forgetting
+  to refresh.
+
+### What genuinely worked, worth stating plainly
+
+Every step of spec.md §7's literal success definition was completed
+without opening Docker Desktop, a terminal, or another DB client — the
+core promise of the whole project holds up under an actual, unscripted
+(beyond the Playwright driving itself) run-through, not just per-phase
+unit/integration tests in isolation.
+
+### Cleanup performed
+
+Docker container/network/volume for the test profile removed (the
+delete-profile dialog's own disclosure that these survive a profile
+delete was correct and expected — cleaned up manually since this was
+throwaway test data, not something to preserve). The 3 duplicate saved
+connections and 1 snippet created during repeated test-script runs were
+removed via a throwaway `cmd/` program against the real app-data
+SQLite DB (confirmed via `storage.ListConnections`/`ListSnippets`
+afterward: 0 remaining of each). Query history rows were already gone
+by the time of this check — cascade-deleted along with their owning
+connection, confirming `DeleteConnection`'s cascade behavior works as
+designed, not left as orphaned rows.
+
+**Phase 9 (Polish & Ship v1) is now complete except for task 9.3
+(Windows installer), which remains genuinely blocked on an NSIS
+install requiring interactive admin elevation this environment cannot
+provide** — documented precisely in Session 16, not silently skipped.
+This is the final phase of the project; a `docs/HANDOFF.md` deliverable
+should be produced next, per the standing session-opening instructions.
