@@ -48,23 +48,19 @@ func ExecuteBatch(ctx context.Context, engine Engine, statements []PreparedState
 	return results
 }
 
-// SplitStatements splits raw multi-statement SQL text on semicolons into
-// individual statement strings, trimming surrounding whitespace and
-// dropping empty segments (e.g. a trailing semicolon or a blank line
-// between statements). This is a deliberately naive, text-level split — it
-// does not understand string literals, so a statement containing a literal
-// ";" inside a quoted value would be split incorrectly. That is an
-// accepted, explicit scope limitation: every caller of
-// ExecuteMultiStatementText in this codebase today runs batches of simple,
-// programmatically generated statements (see app.go's grid-editing bound
-// methods), never arbitrary user-typed SQL where a string literal might
-// contain a semicolon. If a future Query Editor feature wires raw,
-// user-typed multi-statement SQL through this same path, it will need a
-// real SQL tokenizer (aware of quoting/escaping) instead of this function.
+// SplitStatements splits raw multi-statement SQL text into individual
+// statement strings on semicolon boundaries, trimming surrounding
+// whitespace and dropping empty segments (e.g. a trailing semicolon or a
+// blank line between statements). It tracks single- and double-quoted
+// regions while scanning, so a ";" inside a quoted string literal or a
+// double-quoted identifier does not end a statement, including SQL's
+// convention of repeating a quote character back to back to escape a
+// literal quote inside those regions. It is still not a full SQL parser:
+// constructs such as comments and dollar-quoted strings are out of scope.
 func SplitStatements(sql string) []string {
-	parts := strings.Split(sql, ";")
-	statements := make([]string, 0, len(parts))
-	for _, part := range parts {
+	rawStatements := scanStatementBoundaries(sql)
+	statements := make([]string, 0, len(rawStatements))
+	for _, part := range rawStatements {
 		trimmed := strings.TrimSpace(part)
 		if trimmed == "" {
 			continue
@@ -72,6 +68,47 @@ func SplitStatements(sql string) []string {
 		statements = append(statements, trimmed)
 	}
 	return statements
+}
+
+func scanStatementBoundaries(sql string) []string {
+	var parts []string
+	inSingleQuote := false
+	inDoubleQuote := false
+	segmentStart := 0
+
+	for i := 0; i < len(sql); i++ {
+		switch {
+		case inSingleQuote:
+			if sql[i] == '\'' {
+				if isDoubledQuoteAt(sql, i, '\'') {
+					i++
+				} else {
+					inSingleQuote = false
+				}
+			}
+		case inDoubleQuote:
+			if sql[i] == '"' {
+				if isDoubledQuoteAt(sql, i, '"') {
+					i++
+				} else {
+					inDoubleQuote = false
+				}
+			}
+		case sql[i] == '\'':
+			inSingleQuote = true
+		case sql[i] == '"':
+			inDoubleQuote = true
+		case sql[i] == ';':
+			parts = append(parts, sql[segmentStart:i])
+			segmentStart = i + 1
+		}
+	}
+	parts = append(parts, sql[segmentStart:])
+	return parts
+}
+
+func isDoubledQuoteAt(sql string, i int, quote byte) bool {
+	return i+1 < len(sql) && sql[i+1] == quote
 }
 
 // ExecuteMultiStatementText splits sql via SplitStatements and runs each

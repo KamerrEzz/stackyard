@@ -157,6 +157,66 @@ the two engines built so far (Postgres, MySQL) — the full relational
 feature set (editable grid, schema diagrams, MongoDB/Redis support) is
 Phase 4/4.5's job, not this one.
 
+- Editable relational data grid (`grid.go`, a dedicated table-browse
+  architecture — new bound methods scoped to a named table/schema, not
+  detection of arbitrary query results): in-place cell edit → `UPDATE` by
+  primary key; row insert (blank row bound to column defaults/types); row
+  delete with confirmation for multi-row deletes; inline surfacing of the
+  database's actual error message on the offending cell/row; PK-less
+  tables fall back to read-only with a distinguishable, visible reason
+  (`ErrTableHasNoPrimaryKey`). Scoped explicitly to Postgres/MySQL —
+  MongoDB/Redis sessions are rejected outright (tasks 4.1-4.4).
+- Multi-statement SQL execution engine (`internal/dbengine/batch.go`'s
+  `ExecuteBatch`/`ExecuteMultiStatementText`, `multiquery.go`'s
+  `RunMultiStatementQuery` bound method): runs each statement
+  independently regardless of earlier failures, shares `RunQuery`'s
+  cancellation mechanism, logs one `query_history` entry per statement.
+  `QueryEditor.tsx`'s "Run query" now calls this instead of
+  single-statement `RunQuery`, collapsing to the pre-existing single-
+  result view when there's exactly one statement and rendering a
+  per-statement result list otherwise — closes spec.md §4.6's
+  previously-flagged gap in the UI, not just at the Go layer.
+- Query history (`internal/storage/query_history.go` + `app.go`): every
+  execution logged per saved connection (ad-hoc, never-saved connections
+  are intentionally excluded from logging), a filterable/searchable
+  history panel, and a "replay into new tab" action (task 4.5).
+- Snippets CRUD (`internal/storage/snippets.go` + `SnippetsPanel.tsx`):
+  name/tags, connection-scoped or global, compatible-engine filtering (a
+  scoped snippet is offered only to its own connection, a global snippet
+  only to connections of a matching engine) applied in the UI based on
+  the active tab's connection, case-insensitive search on name/tags
+  (task 4.6).
+- "Run snippet" (`snippetRunLogic.ts`): loads a snippet into the current
+  tab, or a new tab when the current one is dirty, with precise
+  dirty-tab detection (a tab's baseline only updates on an explicit load,
+  never on running a query) and a connection-selection fallback chain for
+  global snippets opened into a new tab; the snippet is never
+  auto-executed, only loaded into the editor (task 4.7).
+- Monaco autocomplete (`schemaCompletion.ts`/`schemaCompletionProvider.ts`):
+  table/column suggestions sourced from `ListSchemas`/`ListTables`, with
+  proven cross-tab isolation — each `QueryEditor` instance registers its
+  own schema closure against its own Monaco model and deregisters at
+  unmount, so one tab's tables never leak into another tab's suggestions
+  (task 4.8).
+
+This completes **Phase 4 — Relational DB Client, Complete** (tasks
+4.1-4.8).
+
+- Schema Diagram (`internal/diagram/relational.go` + `schema-diagram/`):
+  `Engine.ListForeignKeys` (Postgres + MySQL) added to the `Engine`
+  interface for FK relationship metadata; `BuildRelationalERDiagram`
+  translates schema + FK metadata into valid Mermaid `erDiagram` text,
+  verified both via exact-string Go tests and by feeding that exact
+  output through Mermaid's own real `mermaid.parse()` in Node (not just
+  string-equality in Go); zoom/pan via CSS `transform` (no new library);
+  export to PNG/SVG and copy raw Mermaid text to clipboard; a
+  "Regenerate" button — diagrams do not auto-refresh live (tasks
+  4.5.1-4.5.5).
+
+This completes **Phase 4.5 — Schema Diagram (Relational)** and, together
+with Phase 4 above, **Module 2's relational feature set for Postgres and
+MySQL** (spec.md §4) — MongoDB and Redis support remain Phases 5/6's job.
+
 ### Fixed
 
 - Docker-integration test container-ID collisions: three of Phase 2's
@@ -191,6 +251,35 @@ Phase 4/4.5's job, not this one.
   call `loader.config({monaco})` before any `<Editor>` mounts — verified
   via captured network traffic showing zero external requests during a
   full manual test pass.
+- Cross-project TypeScript build blocker (task 4.5.2): installing
+  `mermaid` pulled in `@types/d3-dispatch` as a transitive dependency
+  using TS 5.0+-only syntax that this project's pinned
+  `typescript@4.6.4` cannot parse — broke `tsc` for the **whole**
+  project, not just the schema-diagram code. Fixed via a
+  `pnpm-workspace.yaml` `overrides` entry pinning `@types/d3-dispatch` to
+  `3.0.1`. Same root cause as the already-known `@types/node@26`/vitest
+  issue from task 3.7 (a transitive dependency's types using newer TS
+  syntax than the pinned compiler) — worth resolving categorically (e.g.
+  bumping `typescript` itself) if this keeps recurring rather than
+  patching one `overrides` entry at a time.
+- Semicolons inside string literals broke the Query Editor for ordinary
+  single statements once "Run query" started routing through the new
+  multi-statement path — `INSERT INTO widgets (name) VALUES ('hello;
+  world')` mis-split into two broken fragments. Fixed with a byte-level
+  quote-tracking scanner in `internal/dbengine/batch.go`'s
+  `SplitStatements` that does not split inside a single- or
+  double-quoted region and treats a doubled quote (`''`/`""`) as an
+  escaped literal, not a close.
+- Compatible-engine snippet filtering was implemented at the storage
+  layer (task 4.6) but never reached the UI — `SnippetsPanel.tsx` always
+  requested the unscoped snippet list, so a global Postgres snippet
+  stayed visible and runnable with only a MySQL tab open. Fixed by
+  deriving the active tab's connection/engine and passing it through to
+  the existing `ListSnippets` bound method. A second, more subtle bug
+  surfaced while fixing this: the bound method's scoping gate used
+  `ConnectionID != 0`, which is ambiguous (also true for a legitimate
+  ad-hoc/never-saved connection) — corrected to gate on `Engine != ""`
+  instead.
 
 ### Changed
 

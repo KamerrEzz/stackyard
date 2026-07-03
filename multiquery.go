@@ -31,10 +31,8 @@ import (
 // The one top-level error this returns (as opposed to a per-statement
 // failure inside the returned slice) is reserved for conditions that mean
 // execution never started at all: an unknown session, or a query containing
-// no statements once SplitStatements' naive semicolon-split discards blank
-// segments (see that function's doc comment for its documented string-
-// literal-splitting limitation, which applies here too since this is the
-// first place raw, user-typed multi-statement SQL reaches that split).
+// no statements once SplitStatements discards blank segments (e.g. an
+// empty string or one consisting only of whitespace/semicolons).
 //
 // Every statement's outcome is logged to query_history individually via
 // recordStatementResultHistory, one entry per statement — the same

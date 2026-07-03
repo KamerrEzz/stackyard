@@ -103,6 +103,48 @@ func TestSplitStatements(t *testing.T) {
 	}
 }
 
+func TestSplitStatements_QuotedSemicolonsAreNotStatementBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		want []string
+	}{
+		{
+			"semicolon inside single-quoted string literal",
+			"INSERT INTO widgets (name) VALUES ('hello; world')",
+			[]string{"INSERT INTO widgets (name) VALUES ('hello; world')"},
+		},
+		{
+			"escaped single quote then semicolon still inside string literal",
+			"INSERT INTO t (v) VALUES ('it''s a test; still inside')",
+			[]string{"INSERT INTO t (v) VALUES ('it''s a test; still inside')"},
+		},
+		{
+			"unquoted statements still split normally",
+			"SELECT 1; SELECT 2;",
+			[]string{"SELECT 1", "SELECT 2"},
+		},
+		{
+			"semicolon inside double-quoted identifier",
+			`SELECT "my;column" FROM t; SELECT 2;`,
+			[]string{`SELECT "my;column" FROM t`, "SELECT 2"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SplitStatements(tc.sql)
+			if len(got) != len(tc.want) {
+				t.Fatalf("SplitStatements(%q) = %v, want %v", tc.sql, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("SplitStatements(%q)[%d] = %q, want %q", tc.sql, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestExecuteMultiStatementText_RunsEachSplitStatementIndependently(t *testing.T) {
 	boom := errors.New("syntax error")
 	var seenQueries []string

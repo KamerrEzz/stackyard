@@ -1383,3 +1383,41 @@ func TestApp_BuildSchemaDiagram_SurfacesForeignKeysEngineError(t *testing.T) {
 		t.Error("BuildSchemaDiagram() with a ListForeignKeys engine error: expected an error, got nil")
 	}
 }
+
+func TestApp_ListSnippets_EmptyFilterReturnsEverySnippetUnscoped(t *testing.T) {
+	a := newTestApp(t)
+
+	if _, err := a.CreateSnippet("global-pg", storage.EnginePostgres, "SELECT 1", nil, nil); err != nil {
+		t.Fatalf("CreateSnippet failed: %v", err)
+	}
+	if _, err := a.CreateSnippet("global-mysql", storage.EngineMySQL, "SELECT 1", nil, nil); err != nil {
+		t.Fatalf("CreateSnippet failed: %v", err)
+	}
+
+	got, err := a.ListSnippets(SnippetFilter{})
+	if err != nil {
+		t.Fatalf("ListSnippets failed: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListSnippets(empty filter) = %d snippets, want 2 (unscoped)", len(got))
+	}
+}
+
+func TestApp_ListSnippets_AdHocConnectionScopesToCompatibleEngineOnly(t *testing.T) {
+	a := newTestApp(t)
+
+	if _, err := a.CreateSnippet("global-pg", storage.EnginePostgres, "SELECT 1", nil, nil); err != nil {
+		t.Fatalf("CreateSnippet failed: %v", err)
+	}
+	if _, err := a.CreateSnippet("global-mysql", storage.EngineMySQL, "SELECT 1", nil, nil); err != nil {
+		t.Fatalf("CreateSnippet failed: %v", err)
+	}
+
+	got, err := a.ListSnippets(SnippetFilter{ConnectionID: 0, Engine: storage.EnginePostgres})
+	if err != nil {
+		t.Fatalf("ListSnippets failed: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "global-pg" {
+		t.Fatalf("ListSnippets(ad-hoc connection, engine=postgres) = %+v, want only the global-pg snippet", got)
+	}
+}

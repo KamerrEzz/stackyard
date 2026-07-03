@@ -40,9 +40,11 @@ interface SnippetsPanelProps {
     savedConnections: storage.Connection[]
     onRun: (snippet: storage.Snippet) => void
     runError?: string | null
+    activeConnectionId?: number
+    activeEngine?: string
 }
 
-function SnippetsPanel({savedConnections, onRun, runError}: SnippetsPanelProps) {
+function SnippetsPanel({savedConnections, onRun, runError, activeConnectionId = 0, activeEngine = ''}: SnippetsPanelProps) {
     const [searchText, setSearchText] = useState('')
     const [snippets, setSnippets] = useState<storage.Snippet[]>([])
     const [listError, setListError] = useState<string | null>(null)
@@ -54,14 +56,14 @@ function SnippetsPanel({savedConnections, onRun, runError}: SnippetsPanelProps) 
 
     const refreshSnippets = useCallback(async () => {
         try {
-            const filter: main.SnippetFilter = {SearchText: searchText, ConnectionID: 0, Engine: ''}
+            const filter: main.SnippetFilter = {SearchText: searchText, ConnectionID: activeConnectionId, Engine: activeEngine}
             const results = await ListSnippets(filter)
             setListError(null)
             setSnippets(results)
         } catch (err) {
             setListError(String(err))
         }
-    }, [searchText])
+    }, [searchText, activeConnectionId, activeEngine])
 
     useEffect(() => {
         void refreshSnippets()

@@ -1756,15 +1756,19 @@ func tagsFromJSON(raw string) ([]string, error) {
 
 // SnippetFilter is the Wails-bridge-safe shape of ListSnippets' filter
 // (tasks.md 4.6). It mirrors storage.SnippetFilter/storage.ConnectionScope
-// but flattens the connection-scope into two plain fields with zero-value
-// sentinels — ConnectionID == 0 means "no connection-scope filter" — rather
-// than a nested pointer struct, following the same sentinel convention
+// but flattens the connection-scope into two plain fields rather than a
+// nested pointer struct, following the same sentinel convention
 // ServiceRequest.HostPort and PortConflictInfo.SuggestedPort already use at
-// this bound-method boundary. When ConnectionID is non-zero, Engine selects
-// which engine counts as "compatible" for global snippets (see
-// storage.ConnectionScope's doc comment) — the frontend is expected to pass
-// the active connection's own engine here, not let the user choose it
-// separately.
+// this bound-method boundary. Engine, not ConnectionID, is what triggers
+// connection-scoped filtering: a non-empty Engine narrows the result to
+// snippets usable from a connection of that engine — its own scoped
+// snippets (if ConnectionID is also non-zero) plus compatible-engine global
+// ones — via storage.ListSnippetsForConnection. This makes an ad-hoc
+// (never-saved) connection's tab, whose ConnectionID is always zero, still
+// get correct engine-only scoping instead of silently falling through to
+// the unscoped "every snippet" result. Leaving Engine empty (regardless of
+// ConnectionID) is the only way to get the unscoped, every-snippet result
+// the snippet-management UI needs when no tab is active.
 type SnippetFilter struct {
 	SearchText   string
 	ConnectionID int64
@@ -1772,12 +1776,11 @@ type SnippetFilter struct {
 }
 
 // ListSnippets returns every Snippet matching filter (tasks.md 4.6, spec.md
-// §4.7's "searchable by name and tag"). Leaving every field at its zero
-// value returns all snippets regardless of scope, which is what the
-// snippet-management UI needs; setting ConnectionID (plus Engine) narrows
-// the result to snippets usable from that specific connection — its own
-// scoped snippets plus compatible-engine global ones — via
-// storage.ListSnippetsForConnection.
+// §4.7's "searchable by name and tag"). Leaving Engine empty returns all
+// snippets regardless of scope; setting Engine (plus ConnectionID, when the
+// active connection traces to a saved one) narrows the result to snippets
+// usable from that connection — see SnippetFilter's own doc comment for why
+// Engine, not ConnectionID, is the field that triggers scoping.
 func (a *App) ListSnippets(filter SnippetFilter) ([]storage.Snippet, error) {
 	db, err := a.requireDB()
 	if err != nil {
@@ -1785,7 +1788,7 @@ func (a *App) ListSnippets(filter SnippetFilter) ([]storage.Snippet, error) {
 	}
 
 	storageFilter := storage.SnippetFilter{SearchText: filter.SearchText}
-	if filter.ConnectionID != 0 {
+	if filter.Engine != "" {
 		storageFilter.ForConnection = &storage.ConnectionScope{
 			ConnectionID: filter.ConnectionID,
 			Engine:       filter.Engine,

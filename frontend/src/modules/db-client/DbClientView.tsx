@@ -11,6 +11,7 @@ import type {main, storage} from '../../../wailsjs/go/models'
 import QueryEditor, {type QueryEditorHandle} from './QueryEditor'
 import QueryHistoryPanel from './QueryHistoryPanel'
 import SnippetsPanel from './SnippetsPanel'
+import {resolveSnippetFilterScope} from './snippetFilterLogic'
 import {findMostRecentCompatibleConnection, resolveRunSnippetTarget, resolveSnippetConnectionSource} from './snippetRunLogic'
 import TabBar from './TabBar'
 import {closeTab, openTab} from './tabState'
@@ -332,6 +333,11 @@ function DbClientView() {
         [activeTabId, tabs],
     )
 
+    const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+    const snippetFilterScope = resolveSnippetFilterScope(
+        activeTab ? {savedConnectionId: activeTab.fields.SavedConnectionID, engine: activeTab.fields.Engine} : null,
+    )
+
     return (
         <div className="flex flex-col gap-6">
             <div>
@@ -563,6 +569,8 @@ function DbClientView() {
                 savedConnections={savedConnections}
                 onRun={(snippet) => void handleRunSnippet(snippet)}
                 runError={runSnippetError}
+                activeConnectionId={snippetFilterScope.connectionId}
+                activeEngine={snippetFilterScope.engine}
             />
 
             <QueryHistoryPanel savedConnections={savedConnections} onReplay={(entry) => void handleReplayEntry(entry)} />
