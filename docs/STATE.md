@@ -2070,12 +2070,50 @@ rows in the real app-data SQLite DB confirmed after.
   `mongo_session.go`. Flagged explicitly by the agent rather than done
   silently; judged acceptable (interface addition only, no logic moved).
 
-### Remaining Phase 5 work
+### Collection filter bar (5.5) — completes Phase 5
 
-Task 5.5 ("Collection browser... basic find/filter bar") is MOSTLY
-already satisfied by the document viewer above (database/collection
-listing, selection, and paginated browsing are all built and wired into
-the unified tab shell) — only the actual filter-bar UI is missing
-(`FindMongoDocuments` is currently always called with an empty filter
-string). A small, tightly-scoped follow-up task is adding just that
-piece.
+- `parseFilterInput` (in `mongoDocumentHelpers.ts`) reuses
+  `validateDocumentJSON`'s "must be a JSON object" rule for consistency
+  with the document editor, rather than a second bespoke check.
+- **Blank string (not `'{}'`) is the canonical "no filter" value** on
+  the frontend, deliberately matching `mongo_session.go`'s existing
+  `decodeMongoJSONObject` convention (a blank `filterJSON` already meant
+  "match everything" server-side) — avoids introducing a second
+  "empty filter" representation.
+- Applying a new filter always resets pagination to `skip=0`; switching
+  database/collection always clears the filter — neither state leaks
+  across a context switch.
+- No Go changes were needed — `FindMongoDocuments`'s `filterJSON`
+  parameter was already fully wired end-to-end since task 5.1, this was
+  purely a missing frontend affordance.
+
+### Manual verification — the full Phase 5 flow, done for real
+
+The filter-bar agent had no browser-automation tool available, so this
+was done as a follow-up: launched `wails dev`, seeded a real MongoDB
+container (plain `docker run`, bypassing Stackyard's profile system)
+with 3 documents (2 `status: "active"`, 1 `status: "archived"`, one
+with a nested object, one with an array field), drove the app via
+Playwright against `localhost:34115`:
+- Pasted `mongodb://localhost:27099/testdb`, engine auto-detected as
+  MongoDB, "Connect" opened a new tab labeled `mongodb@localhost:27099`.
+- Selected database/collection — all 3 documents rendered as an
+  expandable tree with genuine type badges (`objectid`, `string`) and
+  collapsible `array [2 items]`/`object {2 keys}` summaries, matching
+  spec.md §4.4 exactly — confirmed visually, not just via passing tests.
+- Applied `{"status": "active"}` — the archived document correctly
+  disappeared, the two active ones stayed. Cleared the filter — the
+  archived document reappeared.
+- Cleaned up: container removed, `wails dev` process tree killed, `pnpm
+  run build` re-run afterward (killing `wails dev` had emptied the
+  gitignored `frontend/dist/`, which then broke `go build`'s
+  `go:embed` directive until rebuilt — a known environmental quirk, not
+  a code bug, worth remembering if this happens again).
+
+**Phase 5 (MongoDB, tasks 5.1-5.6) is now fully implemented and manually
+verified end-to-end** — Engine, document tree viewer with in-place
+editing/create/delete, collection browser with a working filter bar,
+and the inferred-structure Schema Diagram. Three real bugs were caught
+and fixed along the way this phase: a MongoDB auth/authSource conflict,
+a React StrictMode session-lifecycle race, and (from Phase 4) the
+semicolon-splitting/snippet-filtering pair. Next: Phase 6 (Redis).

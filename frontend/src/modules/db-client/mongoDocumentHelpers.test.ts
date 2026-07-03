@@ -3,6 +3,7 @@ import {
     classifyMongoValue,
     formatDocumentForDuplicate,
     formatDocumentForEdit,
+    parseFilterInput,
     stripId,
     summarizeContainer,
     toggleExpandedPath,
@@ -104,6 +105,55 @@ describe('validateDocumentJSON', () => {
         expect(validateDocumentJSON('42').ok).toBe(false)
         expect(validateDocumentJSON('"just a string"').ok).toBe(false)
         expect(validateDocumentJSON('null').ok).toBe(false)
+    })
+})
+
+describe('parseFilterInput', () => {
+    it('maps empty input to an empty filter', () => {
+        const result = parseFilterInput('')
+        expect(result).toEqual({ok: true, filterJSON: ''})
+    })
+
+    it('maps whitespace-only input to an empty filter', () => {
+        const result = parseFilterInput('   ')
+        expect(result).toEqual({ok: true, filterJSON: ''})
+    })
+
+    it('accepts a well-formed JSON object filter', () => {
+        const result = parseFilterInput('{"status": "active"}')
+        expect(result.ok).toBe(true)
+        if (result.ok) {
+            expect(JSON.parse(result.filterJSON)).toEqual({status: 'active'})
+        }
+    })
+
+    it('accepts operator-shaped filters', () => {
+        const result = parseFilterInput('{"age": {"$gt": 30}}')
+        expect(result.ok).toBe(true)
+        if (result.ok) {
+            expect(JSON.parse(result.filterJSON)).toEqual({age: {$gt: 30}})
+        }
+    })
+
+    it('rejects malformed JSON', () => {
+        const result = parseFilterInput('{"status": "active",}')
+        expect(result.ok).toBe(false)
+        if (!result.ok) {
+            expect(result.error.length).toBeGreaterThan(0)
+        }
+    })
+
+    it('rejects a well-formed JSON array', () => {
+        const result = parseFilterInput('[1, 2, 3]')
+        expect(result.ok).toBe(false)
+        if (!result.ok) {
+            expect(result.error).toMatch(/object/i)
+        }
+    })
+
+    it('rejects a well-formed bare scalar', () => {
+        expect(parseFilterInput('42').ok).toBe(false)
+        expect(parseFilterInput('"just a string"').ok).toBe(false)
     })
 })
 

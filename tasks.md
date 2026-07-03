@@ -127,7 +127,7 @@ code surface with the editable-grid work above.
       before save.
 - [x] **5.4** New document creation (blank `{}` or duplicate-selected) and
       delete-with-confirmation.
-- [ ] **5.5** Collection browser (list collections, basic find/filter bar)
+- [x] **5.5** Collection browser (list collections, basic find/filter bar)
       wired into the multi-tab shell.
 - [x] **5.6** Schema Diagram — MongoDB inferred structure: sample N
       documents per collection, infer shape, render reusing Phase 4.5's

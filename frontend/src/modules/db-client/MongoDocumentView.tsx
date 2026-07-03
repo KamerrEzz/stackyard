@@ -12,7 +12,13 @@ import {
 import type {main} from '../../../wailsjs/go/models'
 import MongoDocumentTree from './MongoDocumentTree'
 import MongoJSONEditor from './MongoJSONEditor'
-import {formatDocumentForDuplicate, formatDocumentForEdit, toggleExpandedPath, validateDocumentJSON} from './mongoDocumentHelpers'
+import {
+    formatDocumentForDuplicate,
+    formatDocumentForEdit,
+    parseFilterInput,
+    toggleExpandedPath,
+    validateDocumentJSON,
+} from './mongoDocumentHelpers'
 import {describeServerPage} from './resultsGridHelpers'
 
 interface MongoDocumentViewProps {
@@ -71,6 +77,10 @@ function MongoDocumentView({fields}: MongoDocumentViewProps) {
     const [loadingDocuments, setLoadingDocuments] = useState(false)
     const [skip, setSkip] = useState(0)
     const [lastFetchCount, setLastFetchCount] = useState(0)
+
+    const [filterText, setFilterText] = useState('')
+    const [appliedFilter, setAppliedFilter] = useState('')
+    const [filterError, setFilterError] = useState<string | null>(null)
 
     const [expandedByDoc, setExpandedByDoc] = useState<Map<string, Set<string>>>(new Map())
 
@@ -160,14 +170,14 @@ function MongoDocumentView({fields}: MongoDocumentViewProps) {
     }, [sessionID, selectedDatabase])
 
     const loadDocuments = useCallback(
-        async (database: string, collection: string, nextSkip: number) => {
+        async (database: string, collection: string, nextSkip: number, filterJSON: string) => {
             if (!sessionID) {
                 return
             }
             setLoadingDocuments(true)
             setDocumentsError(null)
             try {
-                const docs = await FindMongoDocuments(sessionID, database, collection, '', MONGO_PAGE_SIZE, nextSkip)
+                const docs = await FindMongoDocuments(sessionID, database, collection, filterJSON, MONGO_PAGE_SIZE, nextSkip)
                 setDocuments(docs)
                 setLastFetchCount(docs.length)
                 setSkip(nextSkip)
@@ -184,8 +194,11 @@ function MongoDocumentView({fields}: MongoDocumentViewProps) {
     )
 
     useEffect(() => {
+        setFilterText('')
+        setAppliedFilter('')
+        setFilterError(null)
         if (selectedDatabase && selectedCollection) {
-            void loadDocuments(selectedDatabase, selectedCollection, 0)
+            void loadDocuments(selectedDatabase, selectedCollection, 0, '')
         } else {
             setDocuments([])
         }
@@ -311,15 +324,39 @@ function MongoDocumentView({fields}: MongoDocumentViewProps) {
         if (!selectedDatabase || !selectedCollection) {
             return
         }
-        void loadDocuments(selectedDatabase, selectedCollection, Math.max(0, skip - MONGO_PAGE_SIZE))
-    }, [loadDocuments, selectedCollection, selectedDatabase, skip])
+        void loadDocuments(selectedDatabase, selectedCollection, Math.max(0, skip - MONGO_PAGE_SIZE), appliedFilter)
+    }, [appliedFilter, loadDocuments, selectedCollection, selectedDatabase, skip])
 
     const handleNextPage = useCallback(() => {
         if (!selectedDatabase || !selectedCollection) {
             return
         }
-        void loadDocuments(selectedDatabase, selectedCollection, skip + MONGO_PAGE_SIZE)
-    }, [loadDocuments, selectedCollection, selectedDatabase, skip])
+        void loadDocuments(selectedDatabase, selectedCollection, skip + MONGO_PAGE_SIZE, appliedFilter)
+    }, [appliedFilter, loadDocuments, selectedCollection, selectedDatabase, skip])
+
+    const handleApplyFilter = useCallback(() => {
+        if (!selectedDatabase || !selectedCollection) {
+            return
+        }
+        const parsed = parseFilterInput(filterText)
+        if (!parsed.ok) {
+            setFilterError(parsed.error)
+            return
+        }
+        setFilterError(null)
+        setAppliedFilter(parsed.filterJSON)
+        void loadDocuments(selectedDatabase, selectedCollection, 0, parsed.filterJSON)
+    }, [filterText, loadDocuments, selectedCollection, selectedDatabase])
+
+    const handleClearFilter = useCallback(() => {
+        if (!selectedDatabase || !selectedCollection) {
+            return
+        }
+        setFilterText('')
+        setFilterError(null)
+        setAppliedFilter('')
+        void loadDocuments(selectedDatabase, selectedCollection, 0, '')
+    }, [loadDocuments, selectedCollection, selectedDatabase])
 
     const pageInfo = describeServerPage(skip, MONGO_PAGE_SIZE, lastFetchCount, documents.length)
 
@@ -405,6 +442,46 @@ function MongoDocumentView({fields}: MongoDocumentViewProps) {
 
             {databasesError && <p className="text-xs text-red-400">{databasesError}</p>}
             {collectionsError && <p className="text-xs text-red-400">{collectionsError}</p>}
+
+            {selectedDatabase && selectedCollection && (
+                <div className="flex flex-col gap-1">
+                    <label htmlFor="mongo-filter" className="text-[10px] uppercase tracking-widest text-ink-500">
+                        Filter (JSON)
+                    </label>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <input
+                            id="mongo-filter"
+                            type="text"
+                            value={filterText}
+                            onChange={(e) => setFilterText(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    handleApplyFilter()
+                                }
+                            }}
+                            placeholder='{"status": "active"}'
+                            className="w-72 rounded border border-ink-700 bg-ink-950 px-3 py-1.5 font-mono text-xs text-ink-100 outline-none focus:border-brass-500"
+                        />
+                        <button
+                            type="button"
+                            onClick={handleApplyFilter}
+                            className="rounded border border-ink-700 px-3 py-1.5 text-xs text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400"
+                        >
+                            Find
+                        </button>
+                        {(filterText || appliedFilter) && (
+                            <button
+                                type="button"
+                                onClick={handleClearFilter}
+                                className="rounded border border-ink-700 px-3 py-1.5 text-xs text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400"
+                            >
+                                Clear
+                            </button>
+                        )}
+                    </div>
+                    {filterError && <p className="text-xs text-red-400">{filterError}</p>}
+                </div>
+            )}
 
             {creating && (
                 <MongoJSONEditor
