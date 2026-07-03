@@ -21,6 +21,8 @@ import {resolveSnippetFilterScope} from './snippetFilterLogic'
 import {findMostRecentCompatibleConnection, resolveRunSnippetTarget, resolveSnippetConnectionSource} from './snippetRunLogic'
 import TabBar from './TabBar'
 import {closeTab, openTab} from './tabState'
+import TemplateGallery from './TemplateGallery'
+import type {GalleryEngine} from './templateGalleryLogic'
 
 type Engine = 'postgres' | 'mysql' | 'mongodb' | 'redis'
 
@@ -157,6 +159,8 @@ function DbClientView() {
     const [activeTabId, setActiveTabId] = useState<string | null>(null)
 
     const [runSnippetError, setRunSnippetError] = useState<string | null>(null)
+    const [templateLoadError, setTemplateLoadError] = useState<string | null>(null)
+    const [snippetsRefreshToken, setSnippetsRefreshToken] = useState(0)
     const editorHandlesRef = useRef<Map<string, QueryEditorHandle>>(new Map())
 
     const registerEditorHandle = useCallback((tabId: string, handle: QueryEditorHandle | null) => {
@@ -364,6 +368,37 @@ function DbClientView() {
             }
         },
         [activeTabId, addSqlTab, refreshSavedConnections, savedConnections, tabs],
+    )
+
+    /**
+     * "Load into editor" for the Template gallery (tasks.md 10.3): unlike
+     * handleRunSnippet above, this never opens a new tab — a built-in
+     * template has no connection of its own to attach one to, only a
+     * per-engine SQL string, so the current tab's editor is the only
+     * sensible target. Requires an active SQL tab whose own connection
+     * engine matches templateEngine (TemplateGallery's own Postgres/MySQL
+     * toggle, defaulted to the active tab's engine but user-overridable):
+     * inserting, say, a MySQL-dialect CREATE TABLE into a Postgres tab
+     * would silently fail to run, so this refuses rather than guessing.
+     */
+    const handleLoadTemplate = useCallback(
+        (sql: string, templateName: string, templateEngine: GalleryEngine) => {
+            setTemplateLoadError(null)
+            const currentTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+            if (!currentTab || currentTab.kind !== 'sql') {
+                setTemplateLoadError(`Open a ${templateEngine} query tab first, then load "${templateName}" into it.`)
+                return
+            }
+            if (currentTab.fields.Engine !== templateEngine) {
+                setTemplateLoadError(
+                    `The active tab is ${currentTab.fields.Engine}, but "${templateName}" is selected for ${templateEngine} — switch the gallery's engine toggle or open a ${templateEngine} tab.`,
+                )
+                return
+            }
+            const handle = editorHandlesRef.current.get(currentTab.id)
+            handle?.loadQuery(sql)
+        },
+        [activeTabId, tabs],
     )
 
     const handleDeleteConnection = useCallback(
@@ -696,6 +731,14 @@ function DbClientView() {
                 runError={runSnippetError}
                 activeConnectionId={snippetFilterScope.connectionId}
                 activeEngine={snippetFilterScope.engine}
+                refreshToken={snippetsRefreshToken}
+            />
+
+            <TemplateGallery
+                activeEngine={activeTab ? activeTab.fields.Engine : null}
+                onLoad={handleLoadTemplate}
+                loadError={templateLoadError}
+                onSaved={() => setSnippetsRefreshToken((token) => token + 1)}
             />
 
             <QueryHistoryPanel savedConnections={savedConnections} onReplay={(entry) => void handleReplayEntry(entry)} />

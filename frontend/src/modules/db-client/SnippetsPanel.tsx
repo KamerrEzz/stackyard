@@ -42,9 +42,23 @@ interface SnippetsPanelProps {
     runError?: string | null
     activeConnectionId?: number
     activeEngine?: string
+    /**
+     * Bumping this (e.g. after the Template gallery saves a template as a
+     * new snippet, tasks.md 10.3) re-triggers refreshSnippets below without
+     * SnippetsPanel needing any awareness of who else can create snippets —
+     * it only ever reacts to its own value changing, never inspects it.
+     */
+    refreshToken?: number
 }
 
-function SnippetsPanel({savedConnections, onRun, runError, activeConnectionId = 0, activeEngine = ''}: SnippetsPanelProps) {
+function SnippetsPanel({
+    savedConnections,
+    onRun,
+    runError,
+    activeConnectionId = 0,
+    activeEngine = '',
+    refreshToken,
+}: SnippetsPanelProps) {
     const [searchText, setSearchText] = useState('')
     const [snippets, setSnippets] = useState<storage.Snippet[]>([])
     const [listError, setListError] = useState<string | null>(null)
@@ -67,7 +81,7 @@ function SnippetsPanel({savedConnections, onRun, runError, activeConnectionId = 
 
     useEffect(() => {
         void refreshSnippets()
-    }, [refreshSnippets])
+    }, [refreshSnippets, refreshToken])
 
     const connectionNameById = useCallback(
         (id: number) => savedConnections.find((conn) => conn.ID === id)?.Name ?? `connection #${id}`,
