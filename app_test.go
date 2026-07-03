@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"net"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"stackyard/internal/dbengine"
 	"stackyard/internal/docker"
 	"stackyard/internal/storage"
+
+	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
 func newTestApp(t *testing.T) *App {
@@ -496,5 +501,295 @@ func TestConnectionStringForService_RejectsUnsupportedEngine(t *testing.T) {
 
 	if _, err := connectionStringForService(svc); err == nil {
 		t.Error("connectionStringForService() with an unsupported engine: expected an error, got nil")
+	}
+}
+
+func TestApp_ParseConnectionURL_FlattensParamsAndPopulatesFields(t *testing.T) {
+	a := &App{}
+
+	got, err := a.ParseConnectionURL("postgres://alice:s3cret@localhost:5432/mydb?sslmode=require")
+	if err != nil {
+		t.Fatalf("ParseConnectionURL failed: %v", err)
+	}
+
+	want := ConnectionFormFields{
+		Engine:   storage.EnginePostgres,
+		Host:     "localhost",
+		Port:     5432,
+		Username: "alice",
+		Password: "s3cret",
+		Database: "mydb",
+		Params:   map[string]string{"sslmode": "require"},
+	}
+	if !reflect.DeepEqual(*got, want) {
+		t.Errorf("ParseConnectionURL() = %+v, want %+v", *got, want)
+	}
+}
+
+func TestApp_ParseConnectionURL_SurfacesTheUnderlyingParseError(t *testing.T) {
+	a := &App{}
+
+	_, err := a.ParseConnectionURL("not-a-connection-string")
+	if err == nil {
+		t.Fatal("ParseConnectionURL() with a malformed string: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "://") {
+		t.Errorf("ParseConnectionURL() error = %q, want it to name the missing scheme separator", err.Error())
+	}
+}
+
+func TestToConnectionFormFields_KeepsFirstValueOfRepeatedParam(t *testing.T) {
+	fields := &dbengine.ConnectionFields{
+		Engine: storage.EngineMySQL,
+		Host:   "localhost",
+		Port:   3306,
+		Params: url.Values{"parseTime": []string{"false", "true"}},
+	}
+
+	got := toConnectionFormFields(fields)
+	if got.Params["parseTime"] != "false" {
+		t.Errorf("toConnectionFormFields() Params[\"parseTime\"] = %q, want the first value %q", got.Params["parseTime"], "false")
+	}
+}
+
+func TestValidateConnectionFormFields_RequiresHost(t *testing.T) {
+	fields := ConnectionFormFields{Host: "  ", Port: 5432}
+	if err := validateConnectionFormFields(fields); err == nil {
+		t.Error("validateConnectionFormFields() with a blank host: expected an error, got nil")
+	}
+}
+
+func TestValidateConnectionFormFields_RejectsOutOfRangePort(t *testing.T) {
+	for _, port := range []int{0, -1, 65536, 100000} {
+		fields := ConnectionFormFields{Host: "localhost", Port: port}
+		if err := validateConnectionFormFields(fields); err == nil {
+			t.Errorf("validateConnectionFormFields(port=%d): expected an error, got nil", port)
+		}
+	}
+}
+
+func TestValidateConnectionFormFields_AcceptsValidHostAndPort(t *testing.T) {
+	fields := ConnectionFormFields{Host: "localhost", Port: 5432}
+	if err := validateConnectionFormFields(fields); err != nil {
+		t.Errorf("validateConnectionFormFields() = %v, want nil", err)
+	}
+}
+
+func TestBuildPostgresTestConnString_BuildsExpectedURL(t *testing.T) {
+	fields := ConnectionFormFields{
+		Engine:   storage.EnginePostgres,
+		Host:     "localhost",
+		Port:     5432,
+		Username: "alice",
+		Password: "s3cret",
+		Database: "mydb",
+		Params:   map[string]string{"sslmode": "require"},
+	}
+
+	got := buildPostgresTestConnString(fields)
+	want := "postgres://alice:s3cret@localhost:5432/mydb?sslmode=require"
+	if got != want {
+		t.Errorf("buildPostgresTestConnString() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildPostgresTestConnString_PercentEncodesSpecialCharacters(t *testing.T) {
+	fields := ConnectionFormFields{
+		Engine:   storage.EnginePostgres,
+		Host:     "localhost",
+		Port:     5432,
+		Username: "al ice",
+		Password: "p@ss/word:with?chars",
+		Database: "mydb",
+	}
+
+	got := buildPostgresTestConnString(fields)
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("buildPostgresTestConnString() produced an unparseable URL %q: %v", got, err)
+	}
+	if parsed.User.Username() != "al ice" {
+		t.Errorf("round-tripped username = %q, want %q", parsed.User.Username(), "al ice")
+	}
+	password, _ := parsed.User.Password()
+	if password != "p@ss/word:with?chars" {
+		t.Errorf("round-tripped password = %q, want %q", password, "p@ss/word:with?chars")
+	}
+}
+
+func TestBuildPostgresTestConnString_OmitsPasswordSegmentWhenEmpty(t *testing.T) {
+	fields := ConnectionFormFields{Engine: storage.EnginePostgres, Host: "localhost", Port: 5432, Username: "alice", Database: "mydb"}
+
+	got := buildPostgresTestConnString(fields)
+	want := "postgres://alice@localhost:5432/mydb"
+	if got != want {
+		t.Errorf("buildPostgresTestConnString() = %q, want %q (no password separator when password is empty)", got, want)
+	}
+}
+
+func TestBuildMySQLTestDSN_IncludesParseTimeTrue(t *testing.T) {
+	fields := ConnectionFormFields{
+		Engine:   storage.EngineMySQL,
+		Host:     "localhost",
+		Port:     3306,
+		Username: "root",
+		Password: "mysql",
+		Database: "mydb",
+	}
+
+	dsn := buildMySQLTestDSN(fields)
+	if !strings.Contains(dsn, "parseTime=true") {
+		t.Errorf("buildMySQLTestDSN() = %q, want it to contain parseTime=true", dsn)
+	}
+
+	cfg, err := mysqldriver.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("buildMySQLTestDSN() produced an unparseable DSN %q: %v", dsn, err)
+	}
+	if !cfg.ParseTime {
+		t.Error("re-parsed DSN has ParseTime = false, want true")
+	}
+	if cfg.User != "root" || cfg.Passwd != "mysql" || cfg.Addr != "localhost:3306" || cfg.DBName != "mydb" || cfg.Net != "tcp" {
+		t.Errorf("re-parsed DSN = %+v, fields did not round-trip as expected", cfg)
+	}
+}
+
+func TestBuildMySQLTestDSN_ForcesParseTimeTrueEvenIfParamsSaysFalse(t *testing.T) {
+	fields := ConnectionFormFields{
+		Engine:   storage.EngineMySQL,
+		Host:     "localhost",
+		Port:     3306,
+		Username: "root",
+		Database: "mydb",
+		Params:   map[string]string{"parseTime": "false"},
+	}
+
+	dsn := buildMySQLTestDSN(fields)
+	if strings.Count(dsn, "parseTime=") != 1 {
+		t.Fatalf("buildMySQLTestDSN() = %q, want exactly one parseTime param, not a duplicate", dsn)
+	}
+
+	cfg, err := mysqldriver.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("buildMySQLTestDSN() produced an unparseable DSN %q: %v", dsn, err)
+	}
+	if !cfg.ParseTime {
+		t.Error("re-parsed DSN has ParseTime = false even though a conflicting Params[\"parseTime\"]=\"false\" was supplied — the forced true must win, not be silently overridden")
+	}
+}
+
+func TestBuildMySQLTestDSN_PreservesOtherParams(t *testing.T) {
+	fields := ConnectionFormFields{
+		Engine:   storage.EngineMySQL,
+		Host:     "localhost",
+		Port:     3306,
+		Username: "root",
+		Database: "mydb",
+		Params:   map[string]string{"tls": "skip-verify"},
+	}
+
+	dsn := buildMySQLTestDSN(fields)
+	cfg, err := mysqldriver.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("buildMySQLTestDSN() produced an unparseable DSN %q: %v", dsn, err)
+	}
+	if cfg.TLSConfig != "skip-verify" {
+		t.Errorf("re-parsed DSN TLSConfig = %q, want %q", cfg.TLSConfig, "skip-verify")
+	}
+}
+
+func TestBuildMySQLTestDSN_HandlesSpecialCharactersInPassword(t *testing.T) {
+	fields := ConnectionFormFields{
+		Engine:   storage.EngineMySQL,
+		Host:     "localhost",
+		Port:     3306,
+		Username: "root",
+		Password: "p@ss:w/ord",
+		Database: "mydb",
+	}
+
+	dsn := buildMySQLTestDSN(fields)
+	cfg, err := mysqldriver.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("buildMySQLTestDSN() produced an unparseable DSN %q: %v", dsn, err)
+	}
+	if cfg.Passwd != "p@ss:w/ord" {
+		t.Errorf("re-parsed DSN password = %q, want %q", cfg.Passwd, "p@ss:w/ord")
+	}
+}
+
+func TestNewTestEngine_RejectsMongoAndRedisWithClearError(t *testing.T) {
+	for _, engine := range []storage.Engine{storage.EngineMongoDB, storage.EngineRedis} {
+		_, err := newTestEngine(ConnectionFormFields{Engine: engine, Host: "localhost", Port: 1})
+		if err == nil {
+			t.Errorf("newTestEngine(engine=%q): expected a not-yet-supported error, got nil", engine)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not yet supported") {
+			t.Errorf("newTestEngine(engine=%q) error = %q, want it to say \"not yet supported\"", engine, err.Error())
+		}
+	}
+}
+
+func TestNewTestEngine_RejectsUnsupportedEngine(t *testing.T) {
+	if _, err := newTestEngine(ConnectionFormFields{Engine: storage.Engine("oracle")}); err == nil {
+		t.Error("newTestEngine() with an unsupported engine: expected an error, got nil")
+	}
+}
+
+func TestNewTestEngine_ConstructsPostgresAndMySQLEngines(t *testing.T) {
+	fields := ConnectionFormFields{Host: "localhost", Port: 5432, Database: "mydb"}
+
+	fields.Engine = storage.EnginePostgres
+	if _, err := newTestEngine(fields); err != nil {
+		t.Errorf("newTestEngine(postgres) = %v, want nil", err)
+	}
+
+	fields.Engine = storage.EngineMySQL
+	if _, err := newTestEngine(fields); err != nil {
+		t.Errorf("newTestEngine(mysql) = %v, want nil", err)
+	}
+}
+
+func TestApp_TestConnection_RejectsMissingHost(t *testing.T) {
+	a := &App{ctx: context.Background()}
+
+	err := a.TestConnection(ConnectionFormFields{Engine: storage.EnginePostgres, Port: 5432})
+	if err == nil {
+		t.Error("TestConnection() with a blank host: expected an error, got nil")
+	}
+}
+
+func TestApp_TestConnection_UnreachableHostFailsWithinTimeout(t *testing.T) {
+	a := &App{ctx: context.Background()}
+
+	start := time.Now()
+	err := a.TestConnection(ConnectionFormFields{
+		Engine: storage.EnginePostgres,
+		Host:   "127.0.0.1",
+		Port:   1,
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("TestConnection() against an unreachable port: expected an error, got nil")
+	}
+	if elapsed > testConnectionTimeout+5*time.Second {
+		t.Errorf("TestConnection() took %v to fail, want it bounded near testConnectionTimeout (%v)", elapsed, testConnectionTimeout)
+	}
+}
+
+func TestApp_TestConnection_MongoAndRedisReturnNotYetSupported(t *testing.T) {
+	a := &App{ctx: context.Background()}
+
+	for _, engine := range []storage.Engine{storage.EngineMongoDB, storage.EngineRedis} {
+		err := a.TestConnection(ConnectionFormFields{Engine: engine, Host: "localhost", Port: 1})
+		if err == nil {
+			t.Errorf("TestConnection(engine=%q): expected a not-yet-supported error, got nil", engine)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not yet supported") {
+			t.Errorf("TestConnection(engine=%q) error = %q, want it to say \"not yet supported\"", engine, err.Error())
+		}
 	}
 }

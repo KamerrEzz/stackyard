@@ -34,6 +34,10 @@ export function ListProfiles() {
   return window['go']['main']['App']['ListProfiles']();
 }
 
+export function ParseConnectionURL(arg1) {
+  return window['go']['main']['App']['ParseConnectionURL'](arg1);
+}
+
 export function Ping() {
   return window['go']['main']['App']['Ping']();
 }
@@ -68,4 +72,8 @@ export function StopStatusWatcher() {
 
 export function SuggestFreePort(arg1) {
   return window['go']['main']['App']['SuggestFreePort'](arg1);
+}
+
+export function TestConnection(arg1) {
+  return window['go']['main']['App']['TestConnection'](arg1);
 }

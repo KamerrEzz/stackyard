@@ -4,13 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
+	"stackyard/internal/dbengine"
+	dbenginemysql "stackyard/internal/dbengine/mysql"
+	dbenginepostgres "stackyard/internal/dbengine/postgres"
 	"stackyard/internal/docker"
 	"stackyard/internal/netcheck"
 	"stackyard/internal/storage"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -49,6 +55,11 @@ const (
 	// statusWatchInterval is comfortably under spec.md §3.5's ≤2s refresh
 	// target.
 	statusWatchInterval = 1500 * time.Millisecond
+
+	// testConnectionTimeout bounds TestConnection's Connect+Ping round trip
+	// so an unreachable host fails fast instead of hanging the UI (tasks.md
+	// 3.4, spec.md §4.1's "one-click Test connection" requirement).
+	testConnectionTimeout = 5 * time.Second
 )
 
 // App struct is the ONLY surface bound to the frontend — every other package
@@ -967,4 +978,205 @@ func (a *App) buildStatusSnapshot(ctx context.Context) (docker.EnvironmentStatus
 	stats := dockerClient.StatsForContainers(snapshotCtx, runningNames)
 
 	return docker.BuildEnvironmentStatusSnapshot(profileServices, states, stats), nil
+}
+
+// ConnectionFormFields is the Wails-bridge-safe shape of a connection form's
+// data (tasks.md 3.4, spec.md §4.1): field-for-field the same as
+// dbengine.ConnectionFields, except Params is a flat map[string]string
+// instead of url.Values (map[string][]string) — see ParseConnectionURL's
+// doc comment for why this bound-method boundary uses a different shape
+// than urlparse.go's own type without changing that type itself.
+type ConnectionFormFields struct {
+	Engine   storage.Engine
+	Host     string
+	Port     int
+	Username string
+	Password string
+	Database string
+	Params   map[string]string
+}
+
+// toConnectionFormFields flattens a dbengine.ConnectionFields' url.Values
+// Params into a plain map[string]string, keeping only the first value for
+// any key that repeats in the query string. Every query param this app's
+// connection strings actually use (sslmode, authSource, parseTime, ...) is
+// single-valued in practice, and a flat map is simpler both to bind through
+// Wails' JSON-based TS generator and for the frontend's key-value list
+// editor than an array-valued map would be.
+func toConnectionFormFields(fields *dbengine.ConnectionFields) ConnectionFormFields {
+	params := make(map[string]string, len(fields.Params))
+	for key, values := range fields.Params {
+		if len(values) > 0 {
+			params[key] = values[0]
+		}
+	}
+	return ConnectionFormFields{
+		Engine:   fields.Engine,
+		Host:     fields.Host,
+		Port:     fields.Port,
+		Username: fields.Username,
+		Password: fields.Password,
+		Database: fields.Database,
+		Params:   params,
+	}
+}
+
+// ParseConnectionURL parses a pasted connection string (tasks.md 3.4,
+// spec.md §4.1) via dbengine.ParseConnectionString and returns it as
+// ConnectionFormFields rather than *dbengine.ConnectionFields directly.
+// Wails' TS-binding generator serializes exported struct fields through
+// encoding/json, and dbengine.ConnectionFields.Params is url.Values
+// (map[string][]string) — technically JSON-serializable, but every value
+// would need array indexing on the TS side for what is, in every
+// connection string this app parses, a single-valued key. Flattening to
+// map[string]string at this bound-method boundary keeps the frontend's
+// key-value editor simple without touching urlparse.go's own type.
+func (a *App) ParseConnectionURL(raw string) (*ConnectionFormFields, error) {
+	fields, err := dbengine.ParseConnectionString(raw)
+	if err != nil {
+		return nil, err
+	}
+	result := toConnectionFormFields(fields)
+	return &result, nil
+}
+
+// validateConnectionFormFields catches the cases that would otherwise
+// surface as a cryptic dial error deep inside a driver, before any engine is
+// even constructed.
+func validateConnectionFormFields(fields ConnectionFormFields) error {
+	if strings.TrimSpace(fields.Host) == "" {
+		return fmt.Errorf("host is required")
+	}
+	if fields.Port < 1 || fields.Port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535, got %d", fields.Port)
+	}
+	return nil
+}
+
+// buildPostgresTestConnString builds a "postgres://user:pass@host:port/db"
+// URL directly from fields via net/url, the same safe percent-encoding
+// approach internal/docker/connstring.go's PostgresConnectionString already
+// uses for Stackyard-managed services. Built fresh from the current form
+// state, not the originally pasted string, so edits made after autofill
+// (spec.md §4.1's "editable afterward" requirement) are always what gets
+// tested.
+func buildPostgresTestConnString(fields ConnectionFormFields) string {
+	var userInfo *url.Userinfo
+	switch {
+	case fields.Password != "":
+		userInfo = url.UserPassword(fields.Username, fields.Password)
+	case fields.Username != "":
+		userInfo = url.User(fields.Username)
+	}
+
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   userInfo,
+		Host:   fmt.Sprintf("%s:%d", fields.Host, fields.Port),
+		Path:   "/" + fields.Database,
+	}
+
+	if len(fields.Params) > 0 {
+		query := url.Values{}
+		for key, value := range fields.Params {
+			query.Set(key, value)
+		}
+		u.RawQuery = query.Encode()
+	}
+
+	return u.String()
+}
+
+// buildMySQLTestDSN translates fields into go-sql-driver/mysql's own DSN
+// grammar ("user:pass@tcp(host:port)/db?params") — this translation does not
+// exist anywhere else in the codebase (internal/dbengine/mysql/mysql.go's
+// own doc comment on New flags it as a gap left for whoever wires the
+// connection form). It builds a mysqldriver.Config and calls its own
+// FormatDSN rather than hand-formatting the string with fmt.Sprintf:
+// FormatDSN is the exact counterpart of the driver's own ParseDSN, so it is
+// guaranteed to produce a string the driver can always re-read correctly,
+// including a username or password containing "@", ":", or other characters
+// a naively concatenated string could misparse on the way back in.
+//
+// parseTime is always forced true (Config.ParseTime) — without it, MySQL
+// DATETIME/TIMESTAMP columns scan as raw bytes instead of time.Time. Any
+// "parseTime" key already present in fields.Params (e.g. pasted from a URL
+// with an explicit ?parseTime=false) is dropped before copying the rest
+// into Config.Params: FormatDSN would otherwise emit "parseTime=true" from
+// Config.ParseTime AND a second "parseTime=<other value>" from Config.Params,
+// and re-parsing that DSN lets the second, Params-derived occurrence
+// silently win over the forced true.
+func buildMySQLTestDSN(fields ConnectionFormFields) string {
+	cfg := mysqldriver.NewConfig()
+	cfg.User = fields.Username
+	cfg.Passwd = fields.Password
+	cfg.Net = "tcp"
+	cfg.Addr = fmt.Sprintf("%s:%d", fields.Host, fields.Port)
+	cfg.DBName = fields.Database
+	cfg.ParseTime = true
+
+	if len(fields.Params) > 0 {
+		cfg.Params = make(map[string]string, len(fields.Params))
+		for key, value := range fields.Params {
+			if strings.EqualFold(key, "parseTime") {
+				continue
+			}
+			cfg.Params[key] = value
+		}
+	}
+
+	return cfg.FormatDSN()
+}
+
+// newTestEngine constructs the dbengine.Engine for fields.Engine, translating
+// fields into that engine's own connection-string/DSN format. MongoDB and
+// Redis have no dbengine.Engine implementation yet (Phase 5/6, tasks.md) —
+// pasting a mongodb:// or redis:// URL autofills the form fine
+// (urlparse.go already supports all 4 schemes), but Test Connection can't
+// dial either one yet, so this returns a clear "not yet supported" error
+// instead of a nil dereference or a silent no-op.
+func newTestEngine(fields ConnectionFormFields) (dbengine.Engine, error) {
+	switch fields.Engine {
+	case storage.EnginePostgres:
+		return dbenginepostgres.New(buildPostgresTestConnString(fields)), nil
+	case storage.EngineMySQL:
+		return dbenginemysql.New(buildMySQLTestDSN(fields)), nil
+	case storage.EngineMongoDB:
+		return nil, fmt.Errorf("MongoDB connections are not yet supported (coming in a later phase)")
+	case storage.EngineRedis:
+		return nil, fmt.Errorf("Redis connections are not yet supported (coming in a later phase)")
+	default:
+		return nil, fmt.Errorf("unsupported engine %q", fields.Engine)
+	}
+}
+
+// TestConnection proves reachability for the given form fields (tasks.md
+// 3.4, spec.md §4.1's "Test connection" button). It does NOT persist a
+// saved connection — that is task 3.5's job. It builds the right connection
+// string/DSN for fields.Engine, constructs that engine's dbengine.Engine,
+// then runs Connect followed by Ping under testConnectionTimeout so an
+// unreachable host fails fast rather than hanging the UI. The connection is
+// always closed before returning, whether the test succeeded or failed.
+func (a *App) TestConnection(fields ConnectionFormFields) error {
+	if err := validateConnectionFormFields(fields); err != nil {
+		return fmt.Errorf("test connection: %w", err)
+	}
+
+	engine, err := newTestEngine(fields)
+	if err != nil {
+		return fmt.Errorf("test connection: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, testConnectionTimeout)
+	defer cancel()
+
+	if err := engine.Connect(ctx); err != nil {
+		return fmt.Errorf("test connection: %w", err)
+	}
+	defer engine.Close()
+
+	if err := engine.Ping(ctx); err != nil {
+		return fmt.Errorf("test connection: %w", err)
+	}
+	return nil
 }

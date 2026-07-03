@@ -1002,3 +1002,47 @@ Sources checked directly (not recalled from training): `pgx/v5@v5.10.0`
   autocomplete (4.8) — the two are complementary, not redundant; do not
   try to resolve `TableOID` back to a table name for grid display, treat
   it as absent for non-passthrough columns rather than a dependency.
+
+### Connection form UI (3.4) — `app.go` + `DbClientView.tsx`
+
+- **Bound methods**: `ParseConnectionURL(raw string) (*ConnectionFormFields, error)`,
+  `TestConnection(fields ConnectionFormFields) error`.
+  `ConnectionFormFields` mirrors `dbengine.ConnectionFields` except
+  `Params` is `map[string]string` (not `url.Values`) — decided
+  empirically by running `wails generate module` and checking the
+  actual generated TS (`Record<string, string>` vs.
+  `Record<string, string[]>`); real-world connection-string params are
+  single-valued, so the first value on any repeated key wins.
+  `urlparse.go`'s own `ConnectionFields` type is untouched.
+- **MySQL DSN is built via `go-sql-driver/mysql`'s own `Config.FormatDSN()`**,
+  not string concatenation — this is the exact counterpart of the
+  driver's `ParseDSN`, so special characters in credentials round-trip
+  correctly.
+- **Real bug caught while writing tests**: forcing `cfg.ParseTime = true`
+  while also copying a pasted `?parseTime=false` into `cfg.Params`
+  produced a DSN with `parseTime` appearing twice — `FormatDSN()` writes
+  the struct field first and `Params` (sorted alphabetically) after, so
+  re-parsing that DSN let the second occurrence silently win, undoing
+  the forced `true`. Fixed by stripping any `parseTime` key from
+  `Params` before copying it in. **Any future code that builds a MySQL
+  DSN from user-supplied params and also wants to force a driver-level
+  setting needs the same param-stripping precaution** — this is a
+  general footgun with `go-sql-driver/mysql`'s `Config`, not specific to
+  this one field.
+- Postgres/MySQL connection strings are always rebuilt fresh from
+  current form-field state, never from the originally-pasted string —
+  required since fields must stay editable after autofill (spec.md
+  §4.1's explicit requirement).
+- MongoDB/Redis return a clear "not yet supported" error from
+  `TestConnection`, not a silent no-op — paste-and-autofill works for
+  all 4 schemes today (parsing is engine-agnostic), only the actual
+  dial is gated on the engine existing.
+- Manually verified via `wails dev` + Playwright against the real IPC
+  bridge (no project-specific run skill existed yet, so the generic
+  `run` skill's browser-driven pattern was used): malformed-string inline
+  error, Postgres and MySQL paste-autofill (all fields + params),
+  "Connected successfully.", manual-field-edit-after-autofill, and
+  wrong-password failure — all confirmed via screenshot. All Docker
+  resources and throwaway `cmd/` verification programs were removed
+  afterward.
+- Next free integration-test ID: 999014+ (999012/999013 used here).

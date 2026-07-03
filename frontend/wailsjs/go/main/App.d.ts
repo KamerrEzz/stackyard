@@ -18,6 +18,8 @@ export function GetProfileStatus(arg1:number):Promise<string>;
 
 export function ListProfiles():Promise<Array<main.ProfileSummary>>;
 
+export function ParseConnectionURL(arg1:string):Promise<main.ConnectionFormFields>;
+
 export function Ping():Promise<string>;
 
 export function RenameProfile(arg1:number,arg2:string):Promise<main.ProfileSummary>;
@@ -35,3 +37,5 @@ export function StopProfile(arg1:number):Promise<void>;
 export function StopStatusWatcher():Promise<void>;
 
 export function SuggestFreePort(arg1:number):Promise<number>;
+
+export function TestConnection(arg1:main.ConnectionFormFields):Promise<void>;

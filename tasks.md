@@ -71,7 +71,7 @@ regardless of whether a task fully closes.
       (`go-sql-driver/mysql`).
 - [x] **3.3** `urlparse.go`: parse the 4 connection-string formats into
       form fields; unit-test malformed-string error messages.
-- [ ] **3.4** Connection form UI: paste-URL autofill + manual fields +
+- [x] **3.4** Connection form UI: paste-URL autofill + manual fields +
       "Test connection" button.
 - [ ] **3.5** Saved connections list backed by the `connections` table;
       persist across restarts.

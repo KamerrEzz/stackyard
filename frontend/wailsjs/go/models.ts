@@ -1,5 +1,29 @@
 export namespace main {
 	
+	export class ConnectionFormFields {
+	    Engine: string;
+	    Host: string;
+	    Port: number;
+	    Username: string;
+	    Password: string;
+	    Database: string;
+	    Params: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConnectionFormFields(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Engine = source["Engine"];
+	        this.Host = source["Host"];
+	        this.Port = source["Port"];
+	        this.Username = source["Username"];
+	        this.Password = source["Password"];
+	        this.Database = source["Database"];
+	        this.Params = source["Params"];
+	    }
+	}
 	export class PortConflictInfo {
 	    HasConflict: boolean;
 	    Port: number;
