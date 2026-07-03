@@ -1446,3 +1446,102 @@ distinguishable from real usage.**
   session via a small self-contained connection mini-form — it shares
   no runtime state with the DB Client's tabs, by design, avoiding any
   collision with the concurrent Phase 4 grid/history/snippets work.
+
+---
+
+## Session 5 continued — Editable grid (4.1-4.4) and Run snippet (4.7)
+
+Phase 4 (tasks 4.1-4.8) and Phase 4.5 (4.5.1-4.5.5) are now both fully
+complete. Full `go build/vet/gofmt/test`, `-tags=integration`, `pnpm run
+build`, and `pnpm run test` (105/105 Vitest) all green; no Docker or
+real-app-data-DB leftovers (checked directly — 0 profiles/connections/
+snippets in the real SQLite file).
+
+### Editable grid (4.1-4.4) — `grid.go` (new root-level file) + `internal/dbengine/batch.go`
+
+- **Architectural decision: a dedicated "browse table" path, not
+  detection of arbitrary query results.** New bound methods
+  `BrowseTableRows(sessionID, schema, table, limit, offset)
+  (*dbengine.QueryResult, error)`, `UpdateTableRow(sessionID, schema,
+  table, pkValues map[string]any, columnName string, newValue any)
+  error`, `InsertTableRow(sessionID, schema, table, values
+  map[string]any) (map[string]any, error)`, `DeleteTableRows(sessionID,
+  schema, table, pkValuesList []map[string]any)
+  ([]dbengine.StatementResult, error)` — all scoped to a named
+  table/schema the caller already knows, not inferred from an arbitrary
+  `SELECT`'s result set. This matches Module 2's actual mental model
+  (browse a table via `ListTables`, then edit it) rather than fragile
+  text-parsing of ad-hoc SQL to guess editability.
+- **PK-less tables**: `ErrTableHasNoPrimaryKey`, a sentinel error whose
+  message always starts with `"read-only: table has no primary key"` —
+  the frontend checks for that substring (through Go's `%w` wrapping) to
+  distinguish this specific, expected condition from any other write
+  failure, satisfying spec.md §4.1's "visible reason" requirement.
+- **Scoped explicitly to Postgres/MySQL** — `dialectForEngine` rejects a
+  session opened against MongoDB/Redis outright (they get their own
+  browse/edit paradigms in Phases 5/6, not this SQL-generation path).
+- **Multi-statement execution — Go side fully closes the previously-
+  flagged gap; the frontend does not yet call it.**
+  `internal/dbengine/batch.go` adds `PreparedStatement`,
+  `StatementResult`, `ExecuteBatch(ctx, engine, []PreparedStatement)
+  []StatementResult` (runs each independently regardless of earlier
+  failures) and `ExecuteMultiStatementText(ctx, engine, sql string)
+  []StatementResult` (naive semicolon-split — does NOT understand
+  string literals containing `;`, an accepted limitation since every
+  current caller only feeds it programmatically-generated statements or
+  user-typed SQL through the one path described next). A dedicated
+  root-level bound method, `multiquery.go`'s
+  `(a *App) RunMultiStatementQuery(sessionID, query string)
+  ([]dbengine.StatementResult, error)`, exposes this over the Wails
+  bridge — it splits `query` on semicolons, executes each statement
+  independently via `ExecuteMultiStatementText`, shares `RunQuery`'s
+  cancellation mechanism, and logs one `query_history` entry per
+  statement (not one aggregate entry for the whole script). This is
+  fully implemented and tested. **What's NOT done**: `QueryEditor.tsx`
+  never calls `RunMultiStatementQuery` — confirmed by grepping the
+  entire frontend, the only references to that name are in the
+  generated `wailsjs` bindings themselves. The "Run query" button still
+  only calls single-statement `RunQuery`. **The spec.md §4.6 gap is
+  therefore closed at the Go/bound-method layer but still open in the
+  UI** — whoever picks this up next needs to: detect when the editor's
+  text contains more than one statement (or always call
+  `RunMultiStatementQuery` and collapse a single-element result back to
+  the existing single-`QueryResult` view, which `multiquery.go`'s own
+  doc comment explicitly calls "the frontend's job"), and update
+  `ResultsGrid`/`QueryEditor` to render a list of per-statement
+  results instead of assuming exactly one.
+- `gridOperationTimeout` (10s) matches `schemaIntrospectionTimeout`'s
+  budget, since these methods also read table metadata via `ListTables`
+  before writing.
+
+### Run snippet (4.7) — `snippetRunLogic.ts` + `QueryEditor.tsx`/`DbClientView.tsx`
+
+- **"Dirty" is precisely defined**: a tab's current Monaco text differs
+  from its baseline (the text it was created or last explicitly
+  `loadQuery`'d with). Running a query never updates the baseline —
+  further typing after a run still counts as dirty. The conservative
+  reading of "unsaved work."
+- **Connection selection for a new tab** (only relevant when the current
+  tab is dirty or none is open): connection-scoped snippet → its own
+  connection; global snippet + an active tab exists (even dirty) → reuse
+  that tab's connection; global snippet + no active tab → the
+  most-recently-used saved connection of a matching engine
+  (`Connection.LastUsedAt`); none of the above → an inline error asking
+  the user to open/save a connection of that engine first.
+- **Loading into the CURRENT tab never changes that tab's connection** —
+  only the query text, even if the snippet's own scope is a different
+  engine than the tab's live connection. Matches spec.md's literal
+  "loads it into the current tab's editor" wording; no dialect guard
+  exists elsewhere in the editor either, so this isn't a new gap.
+- The snippet is never auto-executed — loaded into the editor only, the
+  user still clicks "Run query" themselves.
+- `QueryEditor` became `forwardRef<QueryEditorHandle>` exposing
+  `isDirty()`/`loadQuery(text)` — an additive API surface, existing prop
+  usage elsewhere untouched.
+
+**Real cleanup note, third occurrence this session**: verified directly
+that the real app-data SQLite has zero leftover profiles/connections/
+snippets after all four Phase 4 agents' manual verification passes —
+the "prefer synthetic test IDs / raw `docker run`, not the real
+`CreateProfile` flow, for manual verification" guidance from earlier in
+this session was followed correctly this time.

@@ -33,6 +33,10 @@ func (f *fakeQueryEngine) Query(ctx context.Context, query string) (*dbengine.Qu
 	return &dbengine.QueryResult{Columns: []dbengine.ResultColumn{{Name: "col"}}, Rows: [][]any{{query}}}, nil
 }
 
+func (f *fakeQueryEngine) Exec(ctx context.Context, query string, args ...any) (*dbengine.QueryResult, error) {
+	return f.Query(ctx, query)
+}
+
 func (f *fakeQueryEngine) ListSchemas(ctx context.Context) ([]string, error) { return nil, nil }
 
 func (f *fakeQueryEngine) ListTables(ctx context.Context, schema string) ([]dbengine.TableInfo, error) {

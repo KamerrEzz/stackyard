@@ -31,6 +31,46 @@ export function paginateRows<T>(rows: readonly T[], page: number, pageSize: numb
     }
 }
 
+export interface ServerPageInfo {
+    pageNumber: number
+    startIndex: number
+    endIndex: number
+    hasPrevPage: boolean
+    hasNextPage: boolean
+}
+
+/**
+ * Describes one page of a backend-paginated `BrowseTableRows` result (tasks.md
+ * 4.1's "View: paginated row browsing" requirement, spec.md §4.3) for the
+ * grid's Prev/Next controls. `BrowseTableRows` returns only one page at a
+ * time and the backend never reports a total row count, so unlike
+ * `paginateRows` (which slices an already-fully-fetched array), there is no
+ * `pageCount`/`totalRows` here to compute from — `hasNextPage` is instead a
+ * heuristic: the most recently fetched page came back with exactly `limit`
+ * rows (`fetchedRowCount === limit`), meaning more rows may exist beyond it,
+ * versus fewer than `limit` rows, meaning this was the last page. `offset`
+ * and `limit` are the values the last `BrowseTableRows` call was made with;
+ * `fetchedRowCount` is that call's own returned row count (captured before
+ * any local edit/delete mutates the displayed rows, so a row deleted from the
+ * current page never flips `hasNextPage` back to false); `displayedRowCount`
+ * is the (possibly locally mutated) row count actually rendered, used only
+ * for the human-readable `startIndex`/`endIndex` range.
+ */
+export function describeServerPage(
+    offset: number,
+    limit: number,
+    fetchedRowCount: number,
+    displayedRowCount: number,
+): ServerPageInfo {
+    return {
+        pageNumber: Math.floor(offset / limit) + 1,
+        startIndex: displayedRowCount === 0 ? 0 : offset + 1,
+        endIndex: displayedRowCount === 0 ? 0 : offset + displayedRowCount,
+        hasPrevPage: offset > 0,
+        hasNextPage: fetchedRowCount === limit,
+    }
+}
+
 export type CellDisplay = {isNull: true} | {isNull: false; text: string}
 
 /**

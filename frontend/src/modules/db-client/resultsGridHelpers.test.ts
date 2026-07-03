@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest'
-import {describeCell, paginateRows} from './resultsGridHelpers'
+import {describeCell, describeServerPage, paginateRows} from './resultsGridHelpers'
 
 describe('paginateRows', () => {
     it('returns all rows on a single page when total is under the page size', () => {

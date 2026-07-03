@@ -38,6 +38,10 @@ func (f *fakeSchemaEngine) Query(context.Context, string) (*dbengine.QueryResult
 	return nil, nil
 }
 
+func (f *fakeSchemaEngine) Exec(context.Context, string, ...any) (*dbengine.QueryResult, error) {
+	return nil, nil
+}
+
 func (f *fakeSchemaEngine) ListSchemas(context.Context) ([]string, error) {
 	return f.schemas, f.schemasErr
 }

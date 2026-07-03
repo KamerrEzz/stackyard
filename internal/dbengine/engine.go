@@ -27,6 +27,18 @@ type Engine interface {
 	// cancel a running query by cancelling ctx (spec.md §4.6).
 	Query(ctx context.Context, query string) (*QueryResult, error)
 
+	// Exec executes a single statement exactly like Query — Columns/Rows are
+	// populated for a statement that returns rows (a SELECT, or an INSERT
+	// carrying Postgres's RETURNING clause), RowsAffected/LastInsertID
+	// otherwise — except args are bound via the driver's own placeholder
+	// syntax (pgx's numbered $1,$2,... for Postgres, go-sql-driver's ? for
+	// MySQL) rather than being embedded in query itself. This is the
+	// parameterized execution path the editable data grid (spec.md §4.3,
+	// tasks.md 4.1-4.4) and multi-statement batch execution (ExecuteBatch)
+	// require, so grid-supplied values are always bound as real query
+	// parameters, never string-interpolated into query text.
+	Exec(ctx context.Context, query string, args ...any) (*QueryResult, error)
+
 	// ListSchemas returns the schemas (Postgres) or databases (MySQL,
 	// which has no separate schema concept) visible on this connection.
 	ListSchemas(ctx context.Context) ([]string, error)
@@ -54,7 +66,15 @@ type QueryResult struct {
 	Columns      []ResultColumn
 	Rows         [][]any
 	RowsAffected int64
-	Duration     time.Duration
+
+	// LastInsertID is populated by MySQL's Exec for an INSERT into a table
+	// with a single auto-increment column, via the driver's own
+	// sql.Result.LastInsertId(). It is always 0 for Postgres (RETURNING
+	// covers that case directly, see InsertTableRow in app.go) and for any
+	// MySQL statement that isn't an auto-increment INSERT.
+	LastInsertID int64
+
+	Duration time.Duration
 }
 
 // ResultColumn describes one column of a QueryResult (tasks.md 3.7),

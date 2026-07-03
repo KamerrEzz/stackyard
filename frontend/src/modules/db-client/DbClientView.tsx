@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useState} from 'react'
+import {useCallback, useEffect, useRef, useState} from 'react'
 import {
     ConnectUsingSavedConnection,
     DeleteConnection,
@@ -8,9 +8,10 @@ import {
     TestConnection,
 } from '../../../wailsjs/go/main/App'
 import type {main, storage} from '../../../wailsjs/go/models'
-import QueryEditor from './QueryEditor'
+import QueryEditor, {type QueryEditorHandle} from './QueryEditor'
 import QueryHistoryPanel from './QueryHistoryPanel'
 import SnippetsPanel from './SnippetsPanel'
+import {findMostRecentCompatibleConnection, resolveRunSnippetTarget, resolveSnippetConnectionSource} from './snippetRunLogic'
 import TabBar from './TabBar'
 import {closeTab, openTab} from './tabState'
 
@@ -95,6 +96,17 @@ function DbClientView() {
 
     const [tabs, setTabs] = useState<DbClientTab[]>([])
     const [activeTabId, setActiveTabId] = useState<string | null>(null)
+
+    const [runSnippetError, setRunSnippetError] = useState<string | null>(null)
+    const editorHandlesRef = useRef<Map<string, QueryEditorHandle>>(new Map())
+
+    const registerEditorHandle = useCallback((tabId: string, handle: QueryEditorHandle | null) => {
+        if (handle) {
+            editorHandlesRef.current.set(tabId, handle)
+        } else {
+            editorHandlesRef.current.delete(tabId)
+        }
+    }, [])
 
     const addTab = useCallback((fields: main.ConnectionFormFields, label: string, initialQuery?: string) => {
         const tab: DbClientTab = {id: nextTabId(), label, fields, initialQuery}
@@ -215,6 +227,57 @@ function DbClientView() {
             }
         },
         [addTab, applyParsedFields, refreshSavedConnections, savedConnections],
+    )
+
+    /**
+     * "Run snippet" (tasks.md 4.7, spec.md §4.7's third bullet): loads
+     * snippet.Body into the current tab's editor if one is active and not
+     * dirty, otherwise opens a new tab so nothing already typed is lost —
+     * this never executes the query itself, only populates the editor
+     * (resolveRunSnippetTarget). Opening a new tab additionally has to pick
+     * a connection for it (resolveSnippetConnectionSource): a
+     * connection-scoped snippet always uses its own connection; a global
+     * snippet reuses the active tab's connection if one is open, else the
+     * most recently used saved connection of a compatible engine, else
+     * reports that no reasonable connection is available.
+     */
+    const handleRunSnippet = useCallback(
+        async (snippet: storage.Snippet) => {
+            setRunSnippetError(null)
+
+            const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+            const activeHandle = activeTab ? (editorHandlesRef.current.get(activeTab.id) ?? null) : null
+            const isActiveTabDirty = activeHandle ? activeHandle.isDirty() : true
+            const target = resolveRunSnippetTarget(activeTabId, isActiveTabDirty)
+
+            if (target.kind === 'current-tab') {
+                const handle = editorHandlesRef.current.get(target.tabId)
+                handle?.loadQuery(snippet.Body)
+                return
+            }
+
+            const snippetConnectionId = snippet.ConnectionID ?? null
+            const mostRecent = findMostRecentCompatibleConnection(savedConnections, snippet.Engine)
+            const source = resolveSnippetConnectionSource(snippetConnectionId, activeTab !== null, mostRecent?.ID ?? null)
+
+            try {
+                if (source.kind === 'scoped' || source.kind === 'most-recent-compatible') {
+                    const fields = await ConnectUsingSavedConnection(source.connectionId)
+                    const savedConn = savedConnections.find((conn) => conn.ID === source.connectionId)
+                    addTab(fields, savedConn ? savedConn.Name : labelForFields(fields), snippet.Body)
+                    await refreshSavedConnections()
+                } else if (source.kind === 'reuse-active-tab' && activeTab) {
+                    addTab(activeTab.fields, activeTab.label, snippet.Body)
+                } else {
+                    setRunSnippetError(
+                        `Snippet "${snippet.Name}" is global and no ${snippet.Engine} connection is open or saved — open or save a ${snippet.Engine} connection first.`,
+                    )
+                }
+            } catch (err) {
+                setRunSnippetError(String(err))
+            }
+        },
+        [activeTabId, addTab, refreshSavedConnections, savedConnections, tabs],
     )
 
     const handleDeleteConnection = useCallback(
@@ -496,7 +559,11 @@ function DbClientView() {
                 ))}
             </div>
 
-            <SnippetsPanel savedConnections={savedConnections} />
+            <SnippetsPanel
+                savedConnections={savedConnections}
+                onRun={(snippet) => void handleRunSnippet(snippet)}
+                runError={runSnippetError}
+            />
 
             <QueryHistoryPanel savedConnections={savedConnections} onReplay={(entry) => void handleReplayEntry(entry)} />
 
@@ -511,7 +578,11 @@ function DbClientView() {
                     />
                     {tabs.map((tab) => (
                         <div key={tab.id} className={tab.id === activeTabId ? '' : 'hidden'}>
-                            <QueryEditor fields={tab.fields} initialQuery={tab.initialQuery} />
+                            <QueryEditor
+                                ref={(handle) => registerEditorHandle(tab.id, handle)}
+                                fields={tab.fields}
+                                initialQuery={tab.initialQuery}
+                            />
                         </div>
                     ))}
                     {activeTabId === null && (

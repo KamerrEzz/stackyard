@@ -38,9 +38,11 @@ function formFromSnippet(snippet: storage.Snippet): SnippetFormState {
 
 interface SnippetsPanelProps {
     savedConnections: storage.Connection[]
+    onRun: (snippet: storage.Snippet) => void
+    runError?: string | null
 }
 
-function SnippetsPanel({savedConnections}: SnippetsPanelProps) {
+function SnippetsPanel({savedConnections, onRun, runError}: SnippetsPanelProps) {
     const [searchText, setSearchText] = useState('')
     const [snippets, setSnippets] = useState<storage.Snippet[]>([])
     const [listError, setListError] = useState<string | null>(null)
@@ -167,6 +169,7 @@ function SnippetsPanel({savedConnections}: SnippetsPanelProps) {
             </div>
 
             {listError && <p className="text-xs text-red-400">{listError}</p>}
+            {runError && <p className="text-xs text-red-400">{runError}</p>}
             {snippets.length === 0 && !listError && <p className="text-sm text-ink-500">No snippets found.</p>}
 
             <div className="flex flex-col gap-2">
@@ -208,6 +211,13 @@ function SnippetsPanel({savedConnections}: SnippetsPanelProps) {
                                 )}
                             </div>
                             <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => onRun(snippet)}
+                                    className="rounded border border-brass-700 px-3 py-1 text-xs text-brass-400 hover:border-brass-500 hover:text-brass-300"
+                                >
+                                    Run
+                                </button>
                                 <button
                                     type="button"
                                     onClick={() => startEdit(snippet)}

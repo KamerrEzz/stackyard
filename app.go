@@ -131,6 +131,14 @@ type App struct {
 type querySession struct {
 	engine       dbengine.Engine
 	connectionID *int64
+
+	// engineType is the storage.Engine OpenConnection's fields.Engine named
+	// when this session was opened. The editable data grid's bound methods
+	// (BrowseTableRows/UpdateTableRow/InsertTableRow/DeleteTableRows,
+	// tasks.md 4.1-4.4) use it to pick the right dbengine.Dialect for
+	// generated SQL — the session's own dbengine.Engine value carries no
+	// dialect information of its own once type-erased behind the interface.
+	engineType storage.Engine
 }
 
 // NewApp creates a new App application struct
@@ -283,7 +291,7 @@ func (a *App) OpenConnection(fields ConnectionFormFields) (string, error) {
 	}
 
 	id := uuid.NewString()
-	a.putQuerySession(id, &querySession{engine: engine, connectionID: connectionID})
+	a.putQuerySession(id, &querySession{engine: engine, connectionID: connectionID, engineType: fields.Engine})
 	return id, nil
 }
 

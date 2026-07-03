@@ -56,6 +56,7 @@ export namespace dbengine {
 	    Columns: ResultColumn[];
 	    Rows: any[][];
 	    RowsAffected: number;
+	    LastInsertID: number;
 	    Duration: number;
 	
 	    static createFrom(source: any = {}) {
@@ -67,6 +68,7 @@ export namespace dbengine {
 	        this.Columns = this.convertValues(source["Columns"], ResultColumn);
 	        this.Rows = source["Rows"];
 	        this.RowsAffected = source["RowsAffected"];
+	        this.LastInsertID = source["LastInsertID"];
 	        this.Duration = source["Duration"];
 	    }
 	
@@ -89,6 +91,42 @@ export namespace dbengine {
 		}
 	}
 	
+	export class StatementResult {
+	    Statement: string;
+	    Result?: QueryResult;
+	    Success: boolean;
+	    ErrorMessage: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StatementResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Statement = source["Statement"];
+	        this.Result = this.convertValues(source["Result"], QueryResult);
+	        this.Success = source["Success"];
+	        this.ErrorMessage = source["ErrorMessage"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TableInfo {
 	    Name: string;
 	    Columns: ColumnInfo[];

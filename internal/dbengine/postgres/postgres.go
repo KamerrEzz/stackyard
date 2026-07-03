@@ -82,12 +82,28 @@ func (e *Engine) Ping(ctx context.Context) error {
 // method's job with ListTables' — a deliberate, documented known
 // limitation, not an oversight.
 func (e *Engine) Query(ctx context.Context, query string) (*dbengine.QueryResult, error) {
+	return e.run(ctx, query)
+}
+
+// Exec executes a single statement exactly like Query, except args are
+// bound via pgx's numbered $1,$2,... placeholders instead of being embedded
+// in query itself — the parameterized path the editable data grid (tasks.md
+// 4.1-4.4) requires.
+func (e *Engine) Exec(ctx context.Context, query string, args ...any) (*dbengine.QueryResult, error) {
+	return e.run(ctx, query, args...)
+}
+
+// run is Query and Exec's shared implementation: pgx's Query plus
+// CommandTag/FieldDescriptions cover both the "returns rows" and "returns a
+// row count" shapes through one call path regardless of whether args is
+// empty (Query's case) or populated (Exec's case).
+func (e *Engine) run(ctx context.Context, query string, args ...any) (*dbengine.QueryResult, error) {
 	if e.pool == nil {
 		return nil, ErrNotConnected
 	}
 
 	start := time.Now()
-	rows, err := e.pool.Query(ctx, query)
+	rows, err := e.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, translatePgError("query", err)
 	}

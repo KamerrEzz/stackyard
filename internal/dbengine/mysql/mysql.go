@@ -92,6 +92,27 @@ func (e *Engine) Ping(ctx context.Context) error {
 // ok from Nullable(); it is left nil only if the driver itself declines to
 // report nullability for that column.
 func (e *Engine) Query(ctx context.Context, query string) (*dbengine.QueryResult, error) {
+	return e.run(ctx, query)
+}
+
+// Exec executes a single statement exactly like Query, except args are
+// bound via go-sql-driver's own "?" placeholders instead of being embedded
+// in query itself — the parameterized path the editable data grid (tasks.md
+// 4.1-4.4) requires. For an INSERT into a table with a single auto-
+// increment column, QueryResult.LastInsertID is populated from the
+// driver's own sql.Result.LastInsertId() — Postgres has no equivalent
+// field populated here since InsertTableRow (app.go) uses Postgres's
+// RETURNING clause instead (see BuildInsertRow in internal/dbengine).
+func (e *Engine) Exec(ctx context.Context, query string, args ...any) (*dbengine.QueryResult, error) {
+	return e.run(ctx, query, args...)
+}
+
+// run is Query and Exec's shared implementation: it classifies query the
+// same way regardless of whether args is empty (Query's case) or populated
+// (Exec's case), since database/sql has no single call that returns both
+// rows and an affected-row count the way pgx's Query-plus-CommandTag does
+// (see the postgres package).
+func (e *Engine) run(ctx context.Context, query string, args ...any) (*dbengine.QueryResult, error) {
 	if e.db == nil {
 		return nil, ErrNotConnected
 	}
@@ -99,7 +120,7 @@ func (e *Engine) Query(ctx context.Context, query string) (*dbengine.QueryResult
 	start := time.Now()
 
 	if !isReadStatement(query) {
-		result, err := e.db.ExecContext(ctx, query)
+		result, err := e.db.ExecContext(ctx, query, args...)
 		if err != nil {
 			return nil, translateMySQLError("exec", err)
 		}
@@ -107,10 +128,11 @@ func (e *Engine) Query(ctx context.Context, query string) (*dbengine.QueryResult
 		if err != nil {
 			return nil, translateMySQLError("read rows affected", err)
 		}
-		return &dbengine.QueryResult{RowsAffected: affected, Duration: time.Since(start)}, nil
+		lastInsertID, _ := result.LastInsertId()
+		return &dbengine.QueryResult{RowsAffected: affected, LastInsertID: lastInsertID, Duration: time.Since(start)}, nil
 	}
 
-	rows, err := e.db.QueryContext(ctx, query)
+	rows, err := e.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, translateMySQLError("query", err)
 	}

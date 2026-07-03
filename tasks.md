@@ -85,11 +85,11 @@ regardless of whether a task fully closes.
 
 ## Phase 4 — Relational DB Client, Complete
 
-- [ ] **4.1** Editable grid: in-place cell edit → `UPDATE` by primary key;
+- [x] **4.1** Editable grid: in-place cell edit → `UPDATE` by primary key;
       read-only fallback + visible reason for PK-less tables.
-- [ ] **4.2** Grid row insert (blank row bound to column defaults/types).
-- [ ] **4.3** Grid row delete with confirmation for multi-row deletes.
-- [ ] **4.4** Inline error surfacing: failed writes show the DB's actual
+- [x] **4.2** Grid row insert (blank row bound to column defaults/types).
+- [x] **4.3** Grid row delete with confirmation for multi-row deletes.
+- [x] **4.4** Inline error surfacing: failed writes show the DB's actual
       error message on the offending cell/row.
 - [x] **4.5** Query history: log every execution to `query_history`;
       build the filterable/searchable history panel; "replay into new
