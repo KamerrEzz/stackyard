@@ -5328,3 +5328,26 @@ messages — carries any AI mention; that standing rule is unchanged.
   its numbered phases (per the user's own instruction), so no new
   checklist entry was added there; this session's record lives here
   instead.
+
+## Session 27 — first public release: v1.0.0, superseding every prior proposed tag
+
+This session's various "Proposed version tags" entries throughout this
+document (Sessions 5, 9, and others) tracked a phase-by-phase internal
+versioning scheme (`v0.1.0` through a proposed `v1.2.0`) that was never
+actually executed — `git tag -l` stayed empty from Phase 0 through the
+end of Phase 11. Once the project was ready to publish as a public
+GitHub repository, the user was asked directly rather than defaulting
+to that internal scheme, since exposing internal phase numbering
+(9/10/11) to a public audience who never saw this document would be
+confusing. **Decision**: the actual first public release is tagged
+`v1.0.0`, bundling the entire project history (Phases 0-11) as a single
+initial release, rather than retroactively cutting `v0.1.0`...`v1.2.0`
+one by one. `wails.json`'s `productVersion` was bumped from `0.0.0` to
+match. `CHANGELOG.md`'s long-standing `[Unreleased]` section (which had
+accumulated every phase's entries without ever being cut into a
+version) was renamed to `## [1.0.0] - 2026-07-03`, with a fresh empty
+`[Unreleased]` section above it for whatever comes next.
+
+Published to GitHub: public repository `KamerrEzz/stackyard`, license
+PolyForm Noncommercial 1.0.0, `main` branch pushed with full history,
+release tag `v1.0.0` created via `gh release create`.
