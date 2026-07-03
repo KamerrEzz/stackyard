@@ -11,18 +11,18 @@ regardless of whether a task fully closes.
 
 ## Phase 0 — Toolchain & Shell
 
-- [ ] **0.1** Install Go, Node/pnpm, Wails CLI; scaffold project with
+- [x] **0.1** Install Go, Node/pnpm, Wails CLI; scaffold project with
       `wails init` (React-TS template); confirm `wails dev` opens a window.
-- [ ] **0.2** Set up Tailwind in the Wails frontend; build the app shell
+- [x] **0.2** Set up Tailwind in the Wails frontend; build the app shell
       (sidebar nav: Environments / DB Client, top bar, dark mode as the
       only theme for v1).
-- [ ] **0.3** Add one trivial bound Go method (e.g. `App.Ping() string`)
+- [x] **0.3** Add one trivial bound Go method (e.g. `App.Ping() string`)
       called from a React button, confirming the full IPC round trip and
       Wails' generated TS bindings work end-to-end.
-- [ ] **0.4** Set up `internal/storage` with `modernc.org/sqlite`; create
+- [x] **0.4** Set up `internal/storage` with `modernc.org/sqlite`; create
       the schema from `plan.md` §4 via a migration/init script run on
       first launch; verify the DB file lands in the OS app-data path.
-- [ ] **0.5** Create `docs/STATE.md` and write the first entry (empty
+- [x] **0.5** Create `docs/STATE.md` and write the first entry (empty
       baseline: what's proven to work, what command runs the app).
 
 ## Phase 1 — Environment Manager MVP (Postgres only)
