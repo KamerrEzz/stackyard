@@ -335,6 +335,37 @@ git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop
 
 Still not run by this agent — for the user to execute manually.
 
+**Update, Session 3 (2026-07-02) — Phase 2 closed, `v0.2.0` now due:**
+Phase 2 ("Environment Manager, Full," tasks 2.1-2.8) is complete and
+manually verified (see "Phase 2 — manual verification pass" further
+below); per `plan.md` §6 this phase **completes Module 1 — Environment
+Manager** in full. Checked `git tag -l` directly: **no tags exist in this
+repo yet** — `v0.1.0` from the note above has still not been run.
+
+That does not block proposing `v0.2.0` now. The semver mapping (end of
+Phase N → `v0.N.0`) is keyed to which phase closed, not to whether the
+previous phase's tag command was actually executed — a git tag is just a
+named ref to a specific commit, and both commits already exist in history
+regardless of tagging order:
+
+- Phase 1's closing commit: `e743c6b` ("docs: close Phase 1 - qa-reviewer
+  pass, changelog, task 1.7 manual verification")
+- Phase 2's closing commit: `92ff4bc` ("docs: manual Phase 2 verification
+  pass (multi-engine, reset volume, dashboard)") — current `HEAD`
+
+The user can run both tag commands in either order, or just `v0.2.0` now
+and `v0.1.0` later pointing at `e743c6b` — the resulting tags will be
+historically accurate either way since each points at the commit where
+that phase actually closed, not at "whenever the tag command ran."
+
+```
+git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop/restart, connection string copy)" e743c6b
+git tag -a v0.2.0 -m "Phase 2: Environment Manager, full (MySQL/MongoDB/Redis orchestration, multi-engine wizard, profile duplicate/rename/delete, reset volume, live status/stats dashboard) - completes Module 1"
+```
+
+Neither has been run by this agent — both are for the user to execute
+manually, in whatever order/timing they prefer.
+
 ---
 
 ## Retroactive comment cleanup — rationale preserved (frontend)
@@ -776,3 +807,75 @@ Playwright against `http://localhost:34115`, not simulated.
 Phase 2 (tasks 2.1-2.8) is confirmed working end-to-end, not just
 unit/integration tested in isolation. `tasks.md`'s Phase 2 checkboxes are
 all checked.
+
+---
+
+## Session 3 close-out — current phase, last task, next steps
+
+**Current phase:** Phase 2 (Environment Manager, Full) is complete and
+closed — `tasks.md` 2.1-2.8 all checked, manually verified end-to-end
+(see the "Phase 2 — manual verification pass" section directly above).
+Per `plan.md` §6, this closes **Module 1 — Environment Manager** in full
+(all 4 engines, profile CRUD, volume reset, live status/stats dashboard).
+
+**Last task completed:** 2.8 (real-time status dashboard), followed by
+the manual Phase 2 verification pass covering all of 2.1-2.8 together.
+
+**In-flight / undecided items carried forward (not blockers, just
+flagged):**
+
+- Redis's no-auth-by-default behavior (task 2.3) is a real
+  security-vs-convenience tradeoff worth revisiting before ship — an
+  unauthenticated Redis on a bound host port is reachable by anything on
+  the machine/LAN that can hit that port.
+- Docker's `ContainerRemove(Force: true)` racing with
+  `RestartPolicyUnlessStopped` (observed during MongoDB task 2.2's
+  integration testing) is a latent risk in the Postgres container spec
+  too, just unobserved there so far — no fix applied, just documented.
+- The status dashboard's connection-string row doesn't auto-collapse if
+  its service stops while expanded — cosmetic, optional follow-up.
+- Integration-test container-ID collisions (the `9990\d\d` convention)
+  have no automated guard — still just a convention documented in this
+  file; the next new integration test file should grep the whole repo for
+  every `9990\d\d` literal before picking a number, not trust the
+  last-recorded one.
+
+**Command to run the app locally:**
+
+```
+cd D:\CODE\projects\Stackyard
+wails dev
+```
+
+(Unchanged since Phase 0 — see the pnpm/`wails.json` gotcha noted in
+Session 1 if this fails with an `EUNSUPPORTEDPROTOCOL`-style error.)
+
+**Run tests:**
+
+```
+cd D:\CODE\projects\Stackyard
+go test ./...
+go test -tags=integration ./internal/docker/...
+```
+
+**Next steps:** Phase 3 — DB Client MVP (Postgres + MySQL only, shared
+grid code): `internal/dbengine` `Engine` interface, connection-string
+parsing (`urlparse.go`), connection form UI, Monaco editor integration,
+read-only results grid, multi-tab shell (tasks 3.1-3.8). This is the
+first Module 2 (DB Client) work and the first place frontend logic
+non-trivial enough to warrant a Vitest suite is expected to appear (see
+Session 1's testing note).
+
+**Standing to-do, not yet scheduled to a specific task**: `plan.md` §4
+commits to encrypting passwords at rest ("never stored plaintext, even
+though this is a local-only tool"). This is still unimplemented —
+`Service.PasswordEncrypted`/`Connection.PasswordEncrypted` hold whatever
+plaintext value is written to them; every engine's container-spec
+builder (`compose.go`, `mysql.go`, `mongodb.go`, `redis.go`) and
+connection-string builder treats the field as already-usable plaintext,
+each with its own comment/report noting this as a known gap owned by
+"whichever task ends up owning credential storage properly." No task in
+`tasks.md` 1.1-9.4 explicitly names this — it should get a real task
+slot (most naturally either late in Phase 2's aftermath or during Phase
+9's polish pass) before v1 ships, rather than continuing to be a
+distributed TODO scattered across 4 files with no single owner.
