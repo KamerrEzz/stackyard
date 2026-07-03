@@ -2297,6 +2297,48 @@ None of these seven have been run by this agent — all are for the user
 to execute manually, in whatever order/timing they prefer, each
 pointing at the exact commit where that phase actually closed.
 
+**Update, Session 15 (2026-07-03) — Phase 8 closed, `v0.8.0` now due:**
+Phase 8 ("Migrations," tasks 8.1-8.5) is complete — migration file
+scaffolding (timestamped up/down SQL pairs, task 8.1), a
+`schema_migrations` tracking table bootstrapped inside the target
+database (task 8.2), "Apply" (all pending migrations in version order,
+atomic per-migration commit of schema change + tracking row via the new
+optional `dbengine.Transactor` interface, task 8.3), "Rollback" (exactly
+one step, task 8.4), and a new top-level Migrations UI panel scoped to a
+saved connection record with a native folder-picker and pending/applied
+status per migration (task 8.5) — see "Session 13", "Session 14", and
+"Session 15" above for the full detail, including the direct
+database-level verification (`\dt`/`schema_migrations` queried directly,
+not just the UI trusted) and the hardcoded-integration-test-port-
+collision bug caught and fixed mid-phase. Per `plan.md` §6 this closes a
+full roadmap phase, mapping to `v0.8.0`.
+
+Checked `git tag -l` directly this session: **still no tags exist in
+this repo** — none of `v0.1.0`-`v0.7.0` from the notes above have been
+run yet, consistent with every prior session's finding. That doesn't
+block proposing `v0.8.0` now, for the same reason already established
+above (a git tag is just a named ref to a specific commit; the tag
+mapping is keyed to which phase closed, not to whether earlier tags
+were actually executed).
+
+- Phase 8's closing commit: `e056136` ("feat: Migrations UI panel -
+  completes Phase 8 (task 8.5)") — current `HEAD`.
+
+```
+git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop/restart, connection string copy)" e743c6b
+git tag -a v0.2.0 -m "Phase 2: Environment Manager, full (MySQL/MongoDB/Redis orchestration, multi-engine wizard, profile duplicate/rename/delete, reset volume, live status/stats dashboard) - completes Module 1" 92ff4bc
+git tag -a v0.3.0 -m "Phase 3: DB Client MVP for Postgres+MySQL (Engine interface, connection-string parser, connection form, saved connections, Monaco editor with cancellable queries, typed results grid, multi-tab shell)" c89a91a
+git tag -a v0.4.0 -m "Phase 4 + 4.5: Relational DB Client, complete (editable grid, multi-statement execution engine at the Go layer, query history, snippets CRUD + Run snippet, Monaco autocomplete) and Schema Diagram for Postgres/MySQL (FK introspection, Mermaid erDiagram generation, zoom/pan, PNG/SVG export) - completes Module 2's relational feature set" 749f127
+git tag -a v0.5.0 -m "Phase 5: MongoDB support (document-oriented Engine via mongo-go-driver, unified multi-tab shell shared with SQL connections, document tree/JSON viewer with in-place editing/create/delete, collection browser with filter bar, inferred-structure Schema Diagram) - completes Module 2's DB Client feature set for every engine except Redis" 2b568ff
+git tag -a v0.6.0 -m "Phase 6: Redis support (key-value Engine via go-redis/v9, all 5 data types, cursor-based SCAN, TTL display/edit/persist, key rename/delete) - completes Module 2, DB Client, in full for all 4 engines" 0d0197f
+git tag -a v0.7.0 -m "Phase 7: Import/Export (CSV/JSON/SQL-dump export for full-table and current-query-result scope, CSV/JSON import with pre-commit validation and atomic bulk-insert), verified via real round-trip tests against fresh Postgres and MySQL instances" 225c80f
+git tag -a v0.8.0 -m "Phase 8: Migrations for Postgres+MySQL (create-migration scaffolding, schema_migrations tracking table, atomic Apply/Rollback via a new optional dbengine.Transactor interface, Migrations UI panel with folder-picker and pending/applied status), manually verified end-to-end including direct database-level checks" e056136
+```
+
+None of these eight have been run by this agent — all are for the user
+to execute manually, in whatever order/timing they prefer, each
+pointing at the exact commit where that phase actually closed.
+
 ---
 
 ## Session 10 — Phase 6 begins: Redis Engine (6.1)
@@ -3105,3 +3147,80 @@ flow via Playwright against `localhost:34115` —
 manually verified end-to-end, including direct confirmation against the
 real target database** — not just the UI's own reporting. Next: Phase 9
 (Polish & Ship v1), the final phase.
+
+---
+
+## Sessions 13-15 close-out — current phase, last task, next steps
+
+**Current phase:** Phase 8 (Migrations) is complete and closed —
+`tasks.md` 8.1-8.5 all checked. Per `plan.md` §6, this closes the
+Migrations slice of the roadmap for Postgres and MySQL — see the
+"Session 13", "Session 14", and "Session 15" sections above for full
+detail (naming/versioning convention, the `schema_migrations` table
+shape, the optional `dbengine.Transactor` interface and why it's
+additive rather than breaking, Apply/Rollback guarantees proven against
+real containers, and the manual UI verification pass including direct
+database-level checks).
+
+**Last task completed:** 8.5 (Migrations UI panel — sidebar module,
+native folder-picker, pending/applied status, Apply/Rollback actions
+with a confirmation dialog on Rollback), following 8.1-8.2 (scaffolding
++ tracking table, Session 13) and 8.3-8.4 (Apply/Rollback engine,
+Session 14) earlier in the same phase.
+
+**In-flight / undecided items carried forward (not blockers, just
+flagged):**
+
+- **Multi-statement migration files are not supported.** Both pgx's
+  default protocol and MySQL's default driver config (no
+  `multiStatements=true`) reject a single `Exec` call containing more
+  than one semicolon-separated statement, and `applyOne`/`rollbackOne`
+  run a migration's whole file as one `Exec` call. A real migration
+  often needs more than one statement (e.g. `CREATE TABLE` + an index in
+  the same `up.sql`) — fixing this touches connection/DSN construction
+  (`urlparse.go`/`OpenConnection`), out of Phase 8's scope. Flagged for
+  Phase 9's polish pass or a later task to decide whether it's worth
+  solving before v1 ships.
+- Two `CreateMigration` calls in the same second for the same folder
+  collide (1-second timestamp resolution) — accepted as a minor,
+  unresolved limitation for an interactive desktop tool.
+- The hardcoded-integration-test-port-collision bug (see "Fixed" in
+  `CHANGELOG.md` and Session 14 above) is fixed for the 4 ports that
+  actually collided this session, but there is still no automated guard
+  against a *future* collision — same standing gap as the long-running
+  `9990\d\d` test-ID convention, now explicitly also covering
+  `HostPort\s*=\s*\d+` literals. Grep both before adding any new
+  integration test file.
+- Every other in-flight item carried forward from prior sessions (Redis
+  no-auth-by-default, `ContainerRemove(Force: true)` racing with
+  `RestartPolicyUnlessStopped`, the status dashboard's non-auto-collapsing
+  connection-string row, MySQL import's missing live integration test,
+  import's MySQL-`BOOLEAN`-as-`tinyint` gap, and the still-unimplemented
+  password-encryption-at-rest commitment from `plan.md` §4) remains
+  exactly as previously documented — none were touched this phase.
+
+**Command to run the app locally:**
+
+```
+cd D:\CODE\projects\Stackyard
+wails dev
+```
+
+(Unchanged since Phase 0 — see the pnpm/`wails.json` gotcha noted in
+Session 1 if this fails with an `EUNSUPPORTEDPROTOCOL`-style error.)
+
+**Run tests:**
+
+```
+cd D:\CODE\projects\Stackyard
+go test ./...
+go test -tags=integration ./...
+pnpm run build
+pnpm run test
+```
+
+**Next steps:** Phase 9 — Polish & Ship v1 (tasks 9.1-9.4): performance
+pass (idle memory/cold-start vs. spec.md §5's NFR bar), visual polish
+pass across both modules, Windows installer build + clean-install
+smoke test, and a dogfood run logging friction points as a v1.1 backlog.
+This is the final phase on the roadmap.

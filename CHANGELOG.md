@@ -356,6 +356,53 @@ engine: Postgres, MySQL, MongoDB, and Redis.
 This completes **Phase 7 — Import/Export** (tasks 7.1-7.4), cutting
 across every engine already built.
 
+- `internal/migrations`: migration file scaffolding — "Create migration"
+  generates a timestamped up/down SQL file pair
+  (`<14-digit UTC timestamp>_<slug>.up.sql`/`.down.sql`);
+  `DiscoverMigrations` sorts strictly by parsed version (never file
+  mtime) and hard-errors on an incomplete up/down pair (task 8.1).
+- `schema_migrations` tracking-table bootstrap inside the target
+  database (Postgres/MySQL): one dialect-neutral
+  `CREATE TABLE IF NOT EXISTS` via `Engine.Exec` shared by both engines;
+  `Connection.MigrationsFolder` added as SQLite schema version 2 via a
+  dedicated `SetConnectionMigrationsFolder` setter, mirroring the
+  existing `LastUsedAt` isolation pattern so nobody silently clobbers it
+  through a generic update (task 8.2).
+- "Apply": runs all pending migrations in version order, with each
+  migration's schema change and its `schema_migrations` tracking row
+  committed atomically together via a new optional
+  `dbengine.Transactor` interface (real per-connection transactions for
+  both `pgxpool` and `database/sql`) — added as a separate, optional
+  interface rather than a breaking change to the shared `Engine`
+  interface, so existing test doubles and the Mongo/Redis engines
+  (which don't implement `Engine` at all) are unaffected. A mid-run
+  failure stops immediately: verified against real containers that an
+  already-applied migration's schema change and tracking row both land,
+  the failing migration's schema change does NOT land and has no
+  tracking row, and later pending migrations are never attempted (task
+  8.3).
+- "Rollback": reverts exactly one migration step, most-recently-applied
+  first — verified against real containers across 3 sequential calls;
+  returns `(nil, nil)` rather than a sentinel error when nothing is left
+  to roll back, since Wails serializes Go errors to plain strings and a
+  nil check is simpler for the frontend than string-matching an error
+  message (task 8.4).
+- Migrations UI panel (`MigrationsView.tsx`, a new top-level sidebar
+  item scoped to a saved Postgres/MySQL connection record, not an
+  ad-hoc DB Client tab): native OS folder-picker
+  (`PickMigrationsFolder`), pending/applied status per migration
+  computed by merging `ListMigrations`' file list against
+  `ListAppliedMigrationVersions`, "Apply pending migrations"/"Rollback
+  last migration" actions with a confirmation dialog on Rollback
+  (matching this project's established destructive-action pattern), and
+  the Rollback button disabled whenever nothing is applied. Manually
+  verified end-to-end against a real Postgres container, including
+  direct `\dt`/`schema_migrations` queries confirming the database
+  itself (not just the UI) reflects Apply/Rollback correctly (task 8.5).
+
+This completes **Phase 8 — Migrations** (tasks 8.1-8.5) for Postgres and
+MySQL.
+
 ### Fixed
 
 - MongoDB auth/`authSource` conflict: `MongoConnectionString`'s database-path
@@ -460,6 +507,20 @@ across every engine already built.
   defensive client-side extension check — the OS file dialog already
   filters by extension, but a user can override that filter to "All
   files," so the helper now actually gates the UI instead of being inert.
+- Docker-integration test host-port collisions across packages (Phase
+  8): two new integration test files correctly grepped the established
+  `9990\d\d` test-ID convention, but each also picked a hardcoded host
+  port that was never cross-checked against other packages' tests — a
+  separate, previously-unchecked number space. Running the full
+  integration suite concurrently (`go test -tags=integration ./...`)
+  surfaced flaky "port is already allocated" failures in unrelated
+  tests (`TestIntegration_App_EditableGrid_Postgres`,
+  `TestIntegration_MySQLEngine_ForeignKeys`, among others). Fixed by
+  reassigning the 4 colliding ports to verified-free ones. **Standing
+  rule for any future integration test in this repo: grep both the
+  `9990\d\d` test-ID convention AND `HostPort\s*=\s*\d+` literals before
+  picking values — they are separate number spaces and checking one does
+  not cover the other.**
 
 ### Changed
 
