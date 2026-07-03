@@ -14,6 +14,7 @@ import (
 	dbenginemongo "stackyard/internal/dbengine/mongo"
 	dbenginemysql "stackyard/internal/dbengine/mysql"
 	dbenginepostgres "stackyard/internal/dbengine/postgres"
+	dbengineredis "stackyard/internal/dbengine/redis"
 	"stackyard/internal/diagram"
 	"stackyard/internal/docker"
 	"stackyard/internal/netcheck"
@@ -94,6 +95,18 @@ const (
 	// is no cancellation hook to build for Mongo the way RunQuery/CancelQuery
 	// needed for SQL).
 	mongoOperationTimeout = 10 * time.Second
+
+	// openRedisConnectionTimeout bounds OpenRedisConnection's Connect+Ping
+	// round trip (tasks.md 6.1), the same budget openMongoConnectionTimeout
+	// gives the Mongo session equivalent, so opening a Redis session against
+	// an unreachable host fails fast instead of hanging the UI.
+	openRedisConnectionTimeout = 5 * time.Second
+
+	// redisOperationTimeout bounds every per-session Redis bound method
+	// below except OpenRedisConnection itself, the Redis-side counterpart of
+	// mongoOperationTimeout, for the same "one generous shared budget rather
+	// than one per method" reasoning.
+	redisOperationTimeout = 10 * time.Second
 )
 
 // App struct is the ONLY surface bound to the frontend — every other package
@@ -150,6 +163,20 @@ type App struct {
 	// session rather than folding into querySessions.
 	mongoSessionsMu sync.Mutex
 	mongoSessions   map[string]*mongoSession
+
+	// redisSessions backs OpenRedisConnection/CloseRedisSession and every
+	// ScanRedisKeys/GetRedis*/SetRedis*/...  bound method (tasks.md 6.1) — a
+	// THIRD PARALLEL map alongside querySessions and mongoSessions,
+	// deliberately not unified with either. dbengineredis.Engine does not
+	// implement dbengine.Engine any more than dbenginemongo.Engine does (see
+	// redis.go's own package doc comment: Redis's key-value/typed-value
+	// shape has no sensible mapping onto Query(ctx, query string) either),
+	// and it is not document-shaped like Mongo's own engine, so it cannot be
+	// folded into mongoSessions without force-fitting Redis into a Mongo
+	// contract that doesn't describe it. This mirrors mongoSessions' own
+	// precedent one level further, for the same reasons.
+	redisSessionsMu sync.Mutex
+	redisSessions   map[string]*redisSession
 }
 
 // querySession holds one live, connected dbengine.Engine bound to a
@@ -216,6 +243,56 @@ type mongoEngine interface {
 
 var _ mongoEngine = (*dbenginemongo.Engine)(nil)
 
+// redisSession holds one live, connected redisEngine bound to a generated
+// session ID (see OpenRedisConnection), the Redis-side counterpart of
+// mongoSession/querySession. It carries no connectionID/engineType for the
+// same reason mongoSession doesn't: Redis sessions aren't logged to
+// query_history (that table's schema is SQL-query-shaped) and there is only
+// one possible engine type once a value lives in this map.
+type redisSession struct {
+	engine redisEngine
+}
+
+// redisEngine is the subset of *dbengineredis.Engine's method set
+// redisSession stores and every Redis bound method (redis_session.go) calls
+// through. It is a small interface local to this package, not
+// dbengineredis.Engine's own concrete type, purely so redis_session_test.go's
+// fakeRedisEngine test-double pattern can mirror mongo_session_test.go's
+// fakeMongoEngine: a fakeRedisEngine exercises OpenRedisConnection/
+// CloseRedisSession's session bookkeeping without a live Redis connection.
+// This is NOT dbengine.Engine and does not make dbengineredis.Engine
+// implement it either — see redis.go's own package doc comment for why
+// Redis gets no relational Engine implementation at all; redisEngine is a
+// separate, narrower contract scoped to exactly what app.go needs.
+// Connect/Ping are deliberately excluded: OpenRedisConnection calls them on
+// the concrete *dbengineredis.Engine before ever storing it in a
+// redisSession, so nothing past that point needs them.
+type redisEngine interface {
+	Close() error
+	ScanKeys(ctx context.Context, pattern string, cursor uint64, count int64) ([]string, uint64, error)
+	KeyType(ctx context.Context, key string) (string, error)
+	GetString(ctx context.Context, key string) (string, error)
+	SetString(ctx context.Context, key, value string) error
+	GetHash(ctx context.Context, key string) (map[string]string, error)
+	SetHash(ctx context.Context, key string, fields map[string]string) error
+	GetList(ctx context.Context, key string, start, stop int64) ([]string, error)
+	PushList(ctx context.Context, key string, values ...string) error
+	SetListElement(ctx context.Context, key string, index int64, value string) error
+	GetSet(ctx context.Context, key string, cursor uint64, count int64) ([]string, uint64, error)
+	AddToSet(ctx context.Context, key string, members ...string) error
+	RemoveFromSet(ctx context.Context, key string, members ...string) error
+	GetSortedSet(ctx context.Context, key string, start, stop int64) ([]dbengineredis.SortedSetMember, error)
+	AddToSortedSet(ctx context.Context, key string, members ...dbengineredis.SortedSetMember) error
+	RemoveFromSortedSet(ctx context.Context, key string, members ...string) error
+	TTL(ctx context.Context, key string) (time.Duration, error)
+	SetTTL(ctx context.Context, key string, ttl time.Duration) error
+	PersistKey(ctx context.Context, key string) error
+	RenameKey(ctx context.Context, oldKey, newKey string) error
+	DeleteKeys(ctx context.Context, keys ...string) error
+}
+
+var _ redisEngine = (*dbengineredis.Engine)(nil)
+
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{}
@@ -252,6 +329,7 @@ func (a *App) shutdown(_ context.Context) {
 	a.StopStatusWatcher()
 	a.closeAllQuerySessions()
 	a.closeAllMongoSessions()
+	a.closeAllRedisSessions()
 
 	if a.db != nil {
 		_ = a.db.Close()
@@ -342,6 +420,45 @@ func (a *App) deleteMongoSession(id string) (*mongoSession, bool) {
 	session, ok := a.mongoSessions[id]
 	if ok {
 		delete(a.mongoSessions, id)
+	}
+	return session, ok
+}
+
+// closeAllRedisSessions closes every live Redis session (see
+// OpenRedisConnection), called from shutdown() so a still-open Redis tab
+// never leaks a connection past app exit — the Redis-side counterpart of
+// closeAllMongoSessions.
+func (a *App) closeAllRedisSessions() {
+	a.redisSessionsMu.Lock()
+	defer a.redisSessionsMu.Unlock()
+	for _, session := range a.redisSessions {
+		_ = session.engine.Close()
+	}
+	a.redisSessions = nil
+}
+
+func (a *App) putRedisSession(id string, session *redisSession) {
+	a.redisSessionsMu.Lock()
+	defer a.redisSessionsMu.Unlock()
+	if a.redisSessions == nil {
+		a.redisSessions = make(map[string]*redisSession)
+	}
+	a.redisSessions[id] = session
+}
+
+func (a *App) getRedisSession(id string) (*redisSession, bool) {
+	a.redisSessionsMu.Lock()
+	defer a.redisSessionsMu.Unlock()
+	session, ok := a.redisSessions[id]
+	return session, ok
+}
+
+func (a *App) deleteRedisSession(id string) (*redisSession, bool) {
+	a.redisSessionsMu.Lock()
+	defer a.redisSessionsMu.Unlock()
+	session, ok := a.redisSessions[id]
+	if ok {
+		delete(a.redisSessions, id)
 	}
 	return session, ok
 }

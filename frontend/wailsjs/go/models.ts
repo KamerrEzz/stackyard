@@ -238,6 +238,34 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class RedisSetPage {
+	    Members: string[];
+	    NextCursor: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisSetPage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Members = source["Members"];
+	        this.NextCursor = source["NextCursor"];
+	    }
+	}
+	export class ScanKeysResult {
+	    Keys: string[];
+	    NextCursor: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ScanKeysResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Keys = source["Keys"];
+	        this.NextCursor = source["NextCursor"];
+	    }
+	}
 	export class ServiceRequest {
 	    Engine: string;
 	    HostPort: number;
@@ -266,6 +294,25 @@ export namespace main {
 	        this.SearchText = source["SearchText"];
 	        this.ConnectionID = source["ConnectionID"];
 	        this.Engine = source["Engine"];
+	    }
+	}
+
+}
+
+export namespace redis {
+	
+	export class SortedSetMember {
+	    Member: string;
+	    Score: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SortedSetMember(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Member = source["Member"];
+	        this.Score = source["Score"];
 	    }
 	}
 

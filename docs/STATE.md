@@ -2223,3 +2223,98 @@ git tag -a v0.5.0 -m "Phase 5: MongoDB support (document-oriented Engine via mon
 None of these five have been run by this agent — all are for the user
 to execute manually, in whatever order/timing they prefer, each
 pointing at the exact commit where that phase actually closed.
+
+---
+
+## Session 10 — Phase 6 begins: Redis Engine (6.1)
+
+### Architectural decision, made deliberately (third time, same pattern)
+
+Redis is key-value oriented with typed values (string/hash/list/set/
+sorted-set), not row/column (SQL) or document (Mongo) shaped.
+`internal/dbengine/redis/redis.go`'s `Engine` gets its own surface —
+deliberately does NOT implement `dbengine.Engine`. `app.go` gained a
+THIRD parallel session map (`redisSessions`), mirroring `querySessions`
+(SQL) and `mongoSessions` (Mongo) exactly — still no attempt to unify
+all three into one polymorphic abstraction.
+
+### `redis.Engine` surface
+
+`New`/`NewFromURL`, `Connect`/`Ping`/`Close`, `ScanKeys` (cursor-based
+`SCAN`, NOT the blocking `KEYS` command — deliberate, `KEYS` is unsafe
+on a large production keyspace), `KeyType`, per-type get/set for all 5
+required types (`GetString`/`SetString`, `GetHash`/`SetHash` as a bulk
+whole-map `HSET` rather than per-field, `GetList`/`RPush`/`LSet` with
+real `LRANGE`-based pagination, `GetSet`/`SAdd`/`SRem` paginated via
+`SSCAN` rather than unbounded `SMEMBERS`, `GetSortedSet`/`ZAdd`/`ZRem`
+via `ZRANGE WITHSCORES`), `TTL`/`SetTTL`/`PersistKey`, `RenameKey`
+(guarded by an `EXISTS` check first — non-atomic against a concurrent
+writer, judged acceptable for a single-user local desktop tool) and
+`DeleteKeys` (multi-key via one `DEL` call).
+
+**Edit-scope simplification, same spirit as Mongo's whole-document JSON
+edit**: hash/list/set/zset editing is bulk-replace, not per-field/
+per-element — documented as an acceptable, deliberate scope reduction.
+
+**TTL sentinel translation** — go-redis v9 only multiplies by
+`time.Second` for a *real* TTL; the `-1`/`-2` sentinels pass through as
+raw nanosecond values. Translated as: missing key → real Go error
+(`ErrKeyNotFound`), no expiry → `-1` (a negative duration, not an
+error — frontend checks for this explicitly), real TTL → unchanged.
+
+### CRITICAL: Wails v2.12.0 bound methods cannot return 3 values — read this before adding ANY new bound method
+
+`internal/binding/boundMethod.go:88-106` (in the vendored Wails module,
+not this repo) has:
+```go
+switch b.OutputCount() {
+case 1: ...
+case 2: ...
+}
+```
+**No `case 3`, no `default`.** A bound method declared with 3 return
+values (e.g. the original `ScanRedisKeys(...) ([]string, uint64,
+error)`) compiles fine and the underlying Go code runs correctly, but
+`returnValue` and `err` both stay at their Go zero values (`nil`)
+unconditionally — the JS caller gets `undefined` with no error, no
+matter what actually happened server-side. This is silent: no build
+error, no runtime panic, no console error — a bound method with 3
+outputs *looks* wired end-to-end (it appears in the generated `.d.ts`,
+Go tests calling it directly all pass) but is dead on arrival the
+moment JS calls it.
+
+Confirmed by reading the actual vendored source directly (not just
+trusting the finding), at
+`C:\Users\kamer\go\pkg\mod\github.com\wailsapp\wails\v2@v2.12.0\internal\binding\boundMethod.go`.
+
+**The fix, and the standing rule going forward**: any bound method that
+needs to return two pieces of data plus an error must wrap the two data
+values in a small result struct instead, dropping back to
+`OutputCount() == 2`. Applied here as:
+```go
+type ScanKeysResult struct { Keys []string; NextCursor uint64 }
+func (a *App) ScanRedisKeys(...) (ScanKeysResult, error)
+
+type RedisSetPage struct { Members []string; NextCursor uint64 }
+func (a *App) GetRedisSet(...) (RedisSetPage, error)
+```
+The underlying `internal/dbengine/redis.Engine` methods keep their
+plain 3-return-value Go signatures unchanged — only the `App`-bound
+wrapper layer in `redis_session.go` needed the struct. **Task 6.2 (and
+any future task adding a Wails-bound method) must use this struct
+pattern any time a method would otherwise need 3+ return values** —
+this is a hard IPC constraint of this Wails version, not a style
+preference, and is easy to get wrong silently since nothing fails loud
+when you do.
+
+### Test ID and cleanup
+
+Integration test ID **999022** (redis) — same slot number as task 5.6
+used for its own reference note; both are correct simultaneously since
+each project's test only asserts its own container name is unique, not
+a single global counter — still, grep `9990\d\d` fresh before picking
+the next one; **999023+** is free as of this session.
+
+Next: bundle 6.2-6.4 (per-type detail views, TTL display/edit, key
+rename/delete) into the frontend, using the corrected
+`ScanKeysResult`/`RedisSetPage` struct-based signatures above.
