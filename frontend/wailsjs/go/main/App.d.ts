@@ -8,6 +8,10 @@ export function CheckProfilePortConflict(arg1:number):Promise<main.PortConflictI
 
 export function CreateProfile(arg1:string):Promise<main.ProfileSummary>;
 
+export function DeleteProfile(arg1:number):Promise<void>;
+
+export function DuplicateProfile(arg1:number):Promise<main.ProfileSummary>;
+
 export function GetConnectionString(arg1:number):Promise<string>;
 
 export function GetProfileStatus(arg1:number):Promise<string>;
@@ -15,6 +19,8 @@ export function GetProfileStatus(arg1:number):Promise<string>;
 export function ListProfiles():Promise<Array<main.ProfileSummary>>;
 
 export function Ping():Promise<string>;
+
+export function RenameProfile(arg1:number,arg2:string):Promise<main.ProfileSummary>;
 
 export function RestartProfile(arg1:number):Promise<void>;
 

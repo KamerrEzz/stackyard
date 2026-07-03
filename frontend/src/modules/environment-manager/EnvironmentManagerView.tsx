@@ -2,9 +2,12 @@ import {useCallback, useEffect, useRef, useState} from 'react'
 import {
     CheckProfilePortConflict,
     CreateProfile,
+    DeleteProfile,
+    DuplicateProfile,
     GetConnectionString,
     GetProfileStatus,
     ListProfiles,
+    RenameProfile,
     StartProfile,
     StopProfile,
 } from '../../../wailsjs/go/main/App'
@@ -145,6 +148,51 @@ function EnvironmentManagerView() {
         [refreshStatus, setRowBusy],
     )
 
+    const handleDuplicate = useCallback(
+        async (profileId: number) => {
+            setRowBusy(profileId, true)
+            try {
+                const summary = await DuplicateProfile(profileId)
+                setRows((prev) => [...prev, summaryToRow(summary)])
+                setRowBusy(profileId, false)
+                await refreshStatus(summary.Profile.ID)
+            } catch (err) {
+                setRowBusy(profileId, false, String(err))
+            }
+        },
+        [refreshStatus, setRowBusy],
+    )
+
+    const handleRename = useCallback(
+        async (profileId: number, newName: string) => {
+            setRowBusy(profileId, true)
+            try {
+                const summary = await RenameProfile(profileId, newName)
+                setRows((prev) =>
+                    prev.map((row) => (row.summary.Profile.ID === profileId ? {...row, summary, error: null} : row)),
+                )
+            } catch (err) {
+                setRowBusy(profileId, false, String(err))
+                return
+            }
+            setRowBusy(profileId, false)
+        },
+        [setRowBusy],
+    )
+
+    const handleDelete = useCallback(
+        async (profileId: number) => {
+            setRowBusy(profileId, true)
+            try {
+                await DeleteProfile(profileId)
+                setRows((prev) => prev.filter((row) => row.summary.Profile.ID !== profileId))
+            } catch (err) {
+                setRowBusy(profileId, false, String(err))
+            }
+        },
+        [setRowBusy],
+    )
+
     const handleCreateAndStart = useCallback(async () => {
         const name = newProfileName.trim()
         if (!name) {
@@ -209,6 +257,9 @@ function EnvironmentManagerView() {
                         row={row}
                         onStart={() => void handleStart(row.summary.Profile.ID)}
                         onStop={() => void handleStop(row.summary.Profile.ID)}
+                        onDuplicate={() => void handleDuplicate(row.summary.Profile.ID)}
+                        onRename={(newName) => void handleRename(row.summary.Profile.ID, newName)}
+                        onDelete={() => void handleDelete(row.summary.Profile.ID)}
                     />
                 ))}
             </div>
@@ -220,17 +271,81 @@ interface ProfileCardProps {
     row: ProfileRow
     onStart: () => void
     onStop: () => void
+    onDuplicate: () => void
+    onRename: (newName: string) => void
+    onDelete: () => void
 }
 
-function ProfileCard({row, onStart, onStop}: ProfileCardProps) {
+function ProfileCard({row, onStart, onStop, onDuplicate, onRename, onDelete}: ProfileCardProps) {
     const {summary, status, busy, error} = row
     const postgresService = summary.Services.find((s) => s.Engine === 'postgres')
+    const [renaming, setRenaming] = useState(false)
+    const [nameDraft, setNameDraft] = useState(summary.Profile.Name)
+
+    useEffect(() => {
+        if (!renaming) {
+            setNameDraft(summary.Profile.Name)
+        }
+    }, [renaming, summary.Profile.Name])
+
+    const submitRename = useCallback(() => {
+        const trimmed = nameDraft.trim()
+        if (trimmed && trimmed !== summary.Profile.Name) {
+            onRename(trimmed)
+        }
+        setRenaming(false)
+    }, [nameDraft, onRename, summary.Profile.Name])
+
+    const requestDelete = useCallback(() => {
+        const confirmed = window.confirm(
+            `Delete profile "${summary.Profile.Name}"?\n\n` +
+                'This only removes the profile from Stackyard — its Docker volumes are NOT deleted ' +
+                'and any data in them is preserved. Use "Reset volume" separately if you also want to ' +
+                'erase the underlying data.',
+        )
+        if (confirmed) {
+            onDelete()
+        }
+    }, [onDelete, summary.Profile.Name])
 
     return (
         <div className="flex flex-col gap-2 rounded border border-ink-800 bg-ink-900/40 p-4">
             <div className="flex items-center justify-between">
                 <div>
-                    <h2 className="text-sm font-semibold text-ink-100">{summary.Profile.Name}</h2>
+                    {renaming ? (
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="text"
+                                value={nameDraft}
+                                autoFocus
+                                onChange={(e) => setNameDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        submitRename()
+                                    } else if (e.key === 'Escape') {
+                                        setRenaming(false)
+                                    }
+                                }}
+                                className="rounded border border-ink-700 bg-ink-950 px-2 py-1 text-sm text-ink-100 outline-none focus:border-brass-500"
+                            />
+                            <button
+                                type="button"
+                                onClick={submitRename}
+                                className="rounded border border-ink-700 px-2 py-1 text-xs text-ink-200 hover:border-brass-500 hover:text-brass-400"
+                            >
+                                Save
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setRenaming(false)}
+                                className="rounded border border-ink-700 px-2 py-1 text-xs text-ink-400 hover:text-ink-200"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    ) : (
+                        <h2 className="text-sm font-semibold text-ink-100">{summary.Profile.Name}</h2>
+                    )}
                     {postgresService && (
                         <p className="font-mono text-xs text-ink-400">
                             postgres · localhost:{postgresService.HostPort}
@@ -257,6 +372,31 @@ function ProfileCard({row, onStart, onStop}: ProfileCardProps) {
                         className="rounded border border-ink-700 px-3 py-1 text-xs text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                         {busy ? '…' : 'Stop'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setRenaming(true)}
+                        disabled={busy || renaming}
+                        className="rounded border border-ink-700 px-3 py-1 text-xs text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        Rename
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onDuplicate}
+                        disabled={busy}
+                        className="rounded border border-ink-700 px-3 py-1 text-xs text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        {busy ? '…' : 'Duplicate'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={requestDelete}
+                        disabled={busy || status !== 'stopped'}
+                        title={status !== 'stopped' ? 'Stop this profile before deleting it' : undefined}
+                        className="rounded border border-red-800 px-3 py-1 text-xs text-red-400 transition-colors hover:border-red-500 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        Delete
                     </button>
                 </div>
             </div>

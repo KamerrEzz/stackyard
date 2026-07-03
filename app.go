@@ -179,6 +179,98 @@ func (a *App) CreateProfile(name string) (*ProfileSummary, error) {
 	return &ProfileSummary{Profile: *profile, Services: []storage.Service{*created}}, nil
 }
 
+// DuplicateProfile copies an existing profile and all of its services under
+// a new, auto-generated name (see storage.DuplicateProfile), returning the
+// new profile's summary. The copy is a fully independent row with its own
+// ID — not an alias of the original — but its services keep the same host
+// ports as their source, so starting the duplicate before changing its
+// ports is expected to surface the same port-conflict pre-check
+// (CheckProfilePortConflict) a manually recreated profile would.
+func (a *App) DuplicateProfile(profileID int64) (*ProfileSummary, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+
+	profile, err := storage.DuplicateProfile(db, profileID)
+	if err != nil {
+		return nil, fmt.Errorf("duplicate profile %d: %w", profileID, err)
+	}
+
+	services, err := storage.ListServicesByProfile(db, profile.ID)
+	if err != nil {
+		return nil, fmt.Errorf("duplicate profile %d: %w", profileID, err)
+	}
+
+	return &ProfileSummary{Profile: *profile, Services: services}, nil
+}
+
+// RenameProfile renames an existing profile in place and returns its
+// refreshed summary.
+func (a *App) RenameProfile(profileID int64, newName string) (*ProfileSummary, error) {
+	db, err := a.requireDB()
+	if err != nil {
+		return nil, err
+	}
+
+	profile, err := storage.UpdateProfile(db, profileID, newName)
+	if err != nil {
+		return nil, fmt.Errorf("rename profile %d: %w", profileID, err)
+	}
+
+	services, err := storage.ListServicesByProfile(db, profile.ID)
+	if err != nil {
+		return nil, fmt.Errorf("rename profile %d: %w", profileID, err)
+	}
+
+	return &ProfileSummary{Profile: *profile, Services: services}, nil
+}
+
+// deleteProfileGuardError decides whether DeleteProfile may proceed, given a
+// profile's current aggregate status (as GetProfileStatus reports it) and
+// any error encountered while determining it. Deletion is refused unless
+// the profile is confirmed "stopped": allowing deletion while a container
+// is still running would leave that container orphaned with no remaining
+// UI reference to stop or reconnect to it, which is worse than surfacing a
+// clear "stop it first" error — and if status can't be confirmed at all
+// (e.g. Docker is unreachable), that same uncertainty means deletion isn't
+// safe to allow either. Kept as its own pure function (no Docker/DB access)
+// so this decision is unit-testable without a live Docker engine.
+func deleteProfileGuardError(profileID int64, status string, statusErr error) error {
+	if statusErr != nil {
+		return fmt.Errorf("delete profile %d: could not confirm the profile is stopped: %w", profileID, statusErr)
+	}
+	if status != "stopped" {
+		return fmt.Errorf("delete profile %d: profile must be stopped before it can be deleted (current status: %s)", profileID, status)
+	}
+	return nil
+}
+
+// DeleteProfile removes a profile and its services from local storage only.
+// It never touches Docker resources — deleting a profile does not delete
+// its Docker volumes (spec.md §3.1); that is a decision the user makes
+// explicitly and separately (task 2.6, "reset volume"). The one Docker
+// interaction this method performs is a read-only status check
+// (GetProfileStatus) used purely to decide whether deletion may proceed at
+// all — see deleteProfileGuardError — it never starts, stops, or removes
+// any container or volume itself.
+func (a *App) DeleteProfile(profileID int64) error {
+	db, err := a.requireDB()
+	if err != nil {
+		return err
+	}
+
+	status, statusErr := a.GetProfileStatus(profileID)
+	if guardErr := deleteProfileGuardError(profileID, status, statusErr); guardErr != nil {
+		return guardErr
+	}
+
+	if err := storage.DeleteProfile(db, profileID); err != nil {
+		return fmt.Errorf("delete profile %d: %w", profileID, err)
+	}
+	return nil
+}
+
 // GetConnectionString returns the canonical connection URL for a service.
 // Phase 1 MVP is Postgres-only; calling this for a non-Postgres service
 // returns an error naming the unsupported engine.

@@ -14,6 +14,14 @@ export function CreateProfile(arg1) {
   return window['go']['main']['App']['CreateProfile'](arg1);
 }
 
+export function DeleteProfile(arg1) {
+  return window['go']['main']['App']['DeleteProfile'](arg1);
+}
+
+export function DuplicateProfile(arg1) {
+  return window['go']['main']['App']['DuplicateProfile'](arg1);
+}
+
 export function GetConnectionString(arg1) {
   return window['go']['main']['App']['GetConnectionString'](arg1);
 }
@@ -28,6 +36,10 @@ export function ListProfiles() {
 
 export function Ping() {
   return window['go']['main']['App']['Ping']();
+}
+
+export function RenameProfile(arg1, arg2) {
+  return window['go']['main']['App']['RenameProfile'](arg1, arg2);
 }
 
 export function RestartProfile(arg1) {
