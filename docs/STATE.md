@@ -2224,6 +2224,42 @@ None of these five have been run by this agent — all are for the user
 to execute manually, in whatever order/timing they prefer, each
 pointing at the exact commit where that phase actually closed.
 
+**Update, Sessions 10-11 (2026-07-02/03) — Phase 6 closed, `v0.6.0` now
+due, Module 2 complete:** Phase 6 ("Redis," tasks 6.1-6.4) is complete —
+Redis Engine (task 6.1, official `go-redis/v9`, all 5 data types,
+cursor-based `SCAN`) plus the key browser/per-type detail views/TTL/
+rename/delete frontend (tasks 6.2-6.4) — and manually verified
+end-to-end via Playwright against the real running app (see "Session
+11 — Manual verification" above). Per `plan.md` §6 this closes a full
+roadmap phase, mapping to `v0.6.0`; it also completes **Module 2 — DB
+Client** in its entirety (spec.md §4) — all 4 engines (Postgres, MySQL,
+MongoDB, Redis) now have working DB Client support.
+
+Checked `git tag -l` directly this session: **still no tags exist in
+this repo** — none of `v0.1.0`-`v0.5.0` from the notes above have been
+run yet, consistent with every prior session's finding. That doesn't
+block proposing `v0.6.0` now, for the same reason already established
+above (a git tag is just a named ref to a specific commit; the tag
+mapping is keyed to which phase closed, not to whether earlier tags
+were actually executed).
+
+- Phase 6's closing commit: `0d0197f` ("feat: Redis key browser and
+  per-type detail views - completes Phase 6 (6.2-6.4)") — current
+  `HEAD`.
+
+```
+git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop/restart, connection string copy)" e743c6b
+git tag -a v0.2.0 -m "Phase 2: Environment Manager, full (MySQL/MongoDB/Redis orchestration, multi-engine wizard, profile duplicate/rename/delete, reset volume, live status/stats dashboard) - completes Module 1" 92ff4bc
+git tag -a v0.3.0 -m "Phase 3: DB Client MVP for Postgres+MySQL (Engine interface, connection-string parser, connection form, saved connections, Monaco editor with cancellable queries, typed results grid, multi-tab shell)" c89a91a
+git tag -a v0.4.0 -m "Phase 4 + 4.5: Relational DB Client, complete (editable grid, multi-statement execution engine at the Go layer, query history, snippets CRUD + Run snippet, Monaco autocomplete) and Schema Diagram for Postgres/MySQL (FK introspection, Mermaid erDiagram generation, zoom/pan, PNG/SVG export) - completes Module 2's relational feature set" 749f127
+git tag -a v0.5.0 -m "Phase 5: MongoDB support (document-oriented Engine via mongo-go-driver, unified multi-tab shell shared with SQL connections, document tree/JSON viewer with in-place editing/create/delete, collection browser with filter bar, inferred-structure Schema Diagram) - completes Module 2's DB Client feature set for every engine except Redis" 2b568ff
+git tag -a v0.6.0 -m "Phase 6: Redis support (key-value Engine via go-redis/v9, all 5 data types, cursor-based SCAN, TTL display/edit/persist, key rename/delete) - completes Module 2, DB Client, in full for all 4 engines" 0d0197f
+```
+
+None of these six have been run by this agent — all are for the user
+to execute manually, in whatever order/timing they prefer, each
+pointing at the exact commit where that phase actually closed.
+
 ---
 
 ## Session 10 — Phase 6 begins: Redis Engine (6.1)
@@ -2509,3 +2545,75 @@ verified end-to-end**, closing Module 2's DB Client feature set for all
 4 engines. One real Wails IPC bug was caught and fixed this phase (the
 3-output bound-method constraint documented above). Next: Phase 7
 (Import/Export — CSV, JSON, SQL dump), tasks 7.1-7.4.
+
+---
+
+## Sessions 10-11 close-out — current phase, last task, next steps
+
+**Current phase:** Phase 6 (Redis) is complete and closed — `tasks.md`
+6.1-6.4 all checked, manually verified end-to-end (see "Manual
+verification — what was actually run, and the one real gap" and the
+gap-closed Playwright pass, both above under Session 11). Per
+`plan.md` §6, this closes Phase 6 as a full roadmap phase AND completes
+**Module 2 — DB Client** in its entirety (spec.md §4): all 4 engines
+(Postgres, MySQL, MongoDB, Redis) now have working DB Client support.
+
+**Last task completed:** 6.4 (key rename and delete with confirmation),
+as part of the combined 6.2-6.4 frontend batch, followed immediately by
+the Playwright manual verification pass covering the full Redis key
+browser end-to-end.
+
+**In-flight / undecided items carried forward (not blockers, just
+flagged):**
+
+- Redis's no-auth-by-default behavior (task 2.3, Phase 2) is still an
+  open security-vs-convenience tradeoff, unchanged by this phase — Phase
+  6 added editing/browsing on top of that existing connection behavior,
+  it didn't touch auth.
+- Hash editing is bulk-JSON, not per-field: removing a field from the
+  JSON text and saving does NOT delete it in Redis (`HSET` only adds/
+  overwrites) — a real, permanent limitation of the existing bound
+  method (`SetRedisHash`), documented directly in the UI. Deleting the
+  whole key is the only way to clear a field.
+- Set/sorted-set editing is simple add-one/remove-one, not diffing — a
+  deliberate choice (see "Judgment calls made this session" under
+  Session 11 above) since both are paginated views, not full snapshots.
+- The standing to-do on encrypting credentials at rest (`plan.md` §4,
+  first flagged at the end of Session 3) is still unimplemented — no
+  task in `tasks.md` 1.1-9.4 explicitly owns it yet.
+- The integration-test container-ID convention (`9990\d\d`) still has no
+  automated guard — grep the whole repo for every `9990\d\d` literal
+  before picking the next one (999023+ is free as of Session 10).
+- **The Wails IPC 3-return-value bug (documented in full under Session
+  10 above) is now a standing rule, not an open item** — but it's worth
+  re-flagging here since it's easy to trip again: any future bound
+  method needing more than one data value plus an error MUST wrap the
+  extra values in a result struct, never declare 3+ return values
+  directly.
+
+**Command to run the app locally:**
+
+```
+cd D:\CODE\projects\Stackyard
+wails dev
+```
+
+(Unchanged since Phase 0 — see the pnpm/`wails.json` gotcha noted in
+Session 1 if this fails with an `EUNSUPPORTEDPROTOCOL`-style error.)
+
+**Run tests:**
+
+```
+cd D:\CODE\projects\Stackyard
+go test ./...
+go test -tags=integration ./internal/docker/...
+go test -tags=integration ./internal/dbengine/redis/...
+pnpm run test
+pnpm run build
+```
+
+**Next steps:** Phase 7 — Import/Export (tasks 7.1-7.4): CSV export for
+a full table and a query result set (type-preserving), JSON export
+(same two scopes), SQL dump export for Postgres/MySQL (round-trip
+tested against a fresh instance), and CSV/JSON import with pre-commit
+validation against target table columns.

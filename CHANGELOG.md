@@ -274,6 +274,32 @@ This completes **Phase 5 — MongoDB** (tasks 5.1-5.6) and, together with
 Phases 3/4/4.5, delivers all of **Module 2 — DB Client** (spec.md §4) except
 Redis, which is Phase 6's job.
 
+- Redis Engine (`internal/dbengine/redis/redis.go`, official `go-redis/v9`): a
+  key-value-oriented surface deliberately separate from both the relational
+  `dbengine.Engine` interface and the Mongo engine — supports all 5 Redis
+  data types (string, hash, list, set, sorted set). Cursor-based `SCAN` for
+  pattern-based key-space scanning (never the blocking `KEYS` command);
+  per-type paginated reads (`LRANGE` for lists, `SSCAN` for sets, `ZRANGE
+  WITHSCORES` for sorted sets); TTL read/set/persist with `-1`/`-2` sentinel
+  translation; key rename (guarded by an `EXISTS` check first) and multi-key
+  delete via one `DEL` call. `app.go` gained a third parallel session map
+  (`redisSessions`), alongside the existing SQL (`querySessions`) and Mongo
+  (`mongoSessions`) maps — still no attempt to unify all three into one
+  polymorphic abstraction (task 6.1).
+- Redis key browser and per-type detail views (`RedisKeyBrowser.tsx`,
+  `RedisKeyDetail.tsx`, `RedisValueViews.tsx`, `redisKeyHelpers.ts`):
+  pattern-driven key scan with real cursor-based "Load more" pagination, a
+  checkbox multi-select key list with confirmation-gated multi-key delete,
+  and one detail view per Redis type (string/hash/list/set/sorted-set) with
+  TTL display/edit/persist and rename. `DbClientTab` extended to a three-way
+  discriminated union (`SqlTab | MongoTab | RedisTab`), reusing the exact
+  pattern the Mongo tab established in Phase 5 — `TabBar`/`tabState.ts`
+  needed zero changes (tasks 6.2-6.4).
+
+This completes **Phase 6 — Redis** (tasks 6.1-6.4) and, together with Phases
+3/4/4.5/5, delivers all of **Module 2 — DB Client** (spec.md §4) for every
+engine: Postgres, MySQL, MongoDB, and Redis.
+
 ### Fixed
 
 - MongoDB auth/`authSource` conflict: `MongoConnectionString`'s database-path
@@ -355,6 +381,23 @@ Redis, which is Phase 6's job.
   `ConnectionID != 0`, which is ambiguous (also true for a legitimate
   ad-hoc/never-saved connection) — corrected to gate on `Engine != ""`
   instead.
+- Wails v2.12.0 bound methods silently drop a 3rd return value: the vendored
+  dispatcher (`internal/binding/boundMethod.go`'s `OutputCount()` switch) only
+  implements `case 1`/`case 2`, with no `case 3` and no `default`. A bound
+  method declared with 3 return values (originally `ScanRedisKeys(...)
+  ([]string, uint64, error)`) compiled cleanly, ran correctly server-side, and
+  even appeared correctly typed in the generated `.d.ts` — but the JS caller
+  silently received `undefined` with no error, regardless of what actually
+  happened. No build error, no runtime panic, no console error. Caught by
+  reading Wails' own vendored source directly, before any frontend code
+  depended on the broken method. Fixed by wrapping the extra return value in
+  a small result struct (`ScanKeysResult{Keys, NextCursor}`,
+  `RedisSetPage{Members, NextCursor}`) to keep every bound method's
+  `OutputCount()` at 2; the underlying `redis.Engine` methods kept their
+  plain 3-value Go signatures unchanged — only the `App`-bound wrapper layer
+  needed the struct. **Standing rule for any future bound method: never
+  return more than 2 values (data + error) — wrap additional data in a
+  struct instead** (task 6.1).
 
 ### Changed
 
