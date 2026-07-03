@@ -4310,3 +4310,92 @@ integration test file's container/ID allocations risked cross-task
 interference in this shared environment, not a gap in this task's own
 verification), `pnpm run build`, `pnpm run test` (244 tests, including
 4 new).
+
+---
+
+## Phase 10 reconciliation — all 4 tasks, orchestrator verification pass
+
+All four Phase 10 work streams (10.1 credentials, 10.2 create-table UI,
+10.3 snippet templates, 10.4/10.5 Prisma/Drizzle export) were dispatched
+and ran concurrently. This section consolidates what the orchestrator
+found and fixed across all four after they landed, beyond what each
+task's own report already covers above.
+
+### Task 10.1 — custom service credentials, orchestrator notes
+
+Independently verified by the implementing session itself (it spawned
+its own fresh-context review agent with no memory of the
+implementation, which re-ran every command and read every changed file
+cold — zero correctness bugs, zero comment-style violations found).
+Nothing further to add beyond what's already documented in that
+session's own report; `ServiceRequest`'s extension and the
+`overrideOrDefault` helper in `app.go` are exactly as reported.
+
+### Task 10.2 — create-table UI, orchestrator notes
+
+Verified directly: `internal/dbengine/createtable.go`'s
+`BuildCreateTableDDL` and the curated column-type list
+(text/varchar(255)/integer/bigint/serial/bigserial/boolean/timestamp/
+numeric) match the report. The integration test's own discovery — that
+an unquoted `Default` value produces a real DB syntax error rather than
+being silently mis-quoted — is a good, deliberate design confirmation,
+not a bug that slipped through.
+
+### Task 10.3 — snippet template gallery, orchestrator notes
+
+Verified directly: the three templates (auth/audit-log/settings-kv)
+and their per-engine SQL variants match the report; MySQL's
+`audit_log.metadata` nullability difference from Postgres is a real,
+documented per-engine SQL constraint (MySQL pre-8.0.13 can't take a
+literal JSON `DEFAULT` value), not an oversight.
+
+### Real bug found during reconciliation: an actual ID collision, not just a near-miss
+
+A full-repo `go test -tags=integration ./...` run (after all four tasks
+had landed) failed twice in
+`stackyard/internal/snippettemplates` with "connection actively
+refused" errors — initially diagnosed as transient Docker/WSL2 resource
+contention from running the suite twice back-to-back (retrying the
+same tests in isolation passed cleanly, which supported that theory).
+That diagnosis was **incomplete**, not wrong on its own terms — a
+proper re-check afterward (`grep -oE "int64 = 9990\d\d"` for literal ID
+*assignments*, not just any occurrence of the digit sequence — the
+earlier occurrence-count check couldn't distinguish "one file using an
+ID many times" from "two files independently using the same ID")
+revealed `schemaexport_integration_test.go` and
+`internal/snippettemplates/templates_integration_test.go` both
+genuinely used profile/service IDs 999033/999034. Interestingly, the
+10.4/10.5 implementer's own report had already half-noticed something
+was off here — its comment flagged `createtable`/`snippettemplates` as
+colliding at 999031/999032, which was actually WRONG (those two don't
+collide; `createtable` correctly used 999031/999032 alone) — the real
+collision was between `schemaexport` and `snippettemplates`, at
+999033/999034, which the comment's author apparently mis-attributed
+while writing it.
+
+**Fixed**: `schemaexport_integration_test.go` reassigned to
+999035/999036 (its host ports, 15546/13324, were already genuinely
+unique and left unchanged). Confirmed stable across two immediate
+consecutive full `go test -tags=integration ./...` runs afterward —
+where the pre-fix state had failed on a rerun, the post-fix state
+passed twice in a row with the same rapid back-to-back timing,
+strengthening the conclusion that the ID collision (not pure resource
+contention) was the real root cause, even though it didn't manifest as
+a hard "name already in use" Docker error on every single run.
+
+**Lesson for future integration tests in this repo, updating Session
+14's original rule**: when checking whether a `9990\d\d` ID is free,
+grep for the literal assignment pattern (`int64 = 9990\d\d`, or
+whatever this project's exact declaration style is at the time), not
+just "does this digit sequence appear anywhere in the repo" — the
+latter conflates one file's multiple internal references to its own ID
+with two different files coincidentally sharing one.
+
+### Phase 10 status: CLOSED
+
+All of `tasks.md` 10.1-10.5 are checked. All four features implemented,
+tested (unit + live-container integration), and independently
+cross-verified. `go build/vet/gofmt` clean; `go test ./...` and
+`go test -tags=integration ./...` both green and confirmed stable
+across repeated back-to-back runs; `pnpm run build`/`pnpm run test`
+(244/244) green.
