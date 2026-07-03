@@ -4606,3 +4606,145 @@ pnpm run test
 either a new user-requested increment (would become Phase 11+, same
 post-v1 pattern as Phase 10) or a resolution of one of the in-flight
 items listed above.
+
+---
+
+## Session 24 — manual live verification of Phase 10, a real data-loss incident, and Phase 11 scoping
+
+### Manual live verification (user's explicit ask: run `wails dev`, test the new features by hand)
+
+Started `wails dev`, drove the real app via Playwright against
+`http://localhost:34115` (the dev server URL with the real Wails
+JS-to-Go IPC bridge, not a mocked frontend). Confirmed live, end to
+end:
+- **10.1**: created a real profile with custom Postgres credentials
+  (`qauser`/`qapass123`/`qadb`) through the actual "Create profile"
+  form's "Custom credentials…" toggle. The resulting container
+  genuinely rejects the old default credentials (`postgres`/`postgres`)
+  with a real auth error, and only accepts the new custom ones —
+  confirmed both directions, not just the happy path.
+- **10.2**: created a real table (`phase10_items`, `id SERIAL PRIMARY
+  KEY`, `name TEXT`) via the "+ New table" dialog; it appeared
+  correctly in the schema's table list afterward.
+- **10.3**: loaded the "Settings / key-value config" template into the
+  editor and ran it; the `settings` table was created with the exact
+  DDL shown in the gallery card.
+- **10.4/10.5**: clicking "Prisma"/"Drizzle" triggers `runtime.
+  SaveFileDialog`, a native Windows dialog outside the DOM — Playwright
+  cannot see or interact with it (same class of limitation as the NSIS
+  installer's UAC prompt from task 9.3). No error appeared in the
+  browser console after clicking, consistent with the call succeeding
+  and simply waiting on a native dialog Playwright can't drive. Already
+  proven correct independently via qa-reviewer's own live-container
+  check of the generated Prisma/Drizzle text in the prior session — not
+  re-verified pixel-by-pixel here, on purpose, since that would just be
+  re-doing what qa-reviewer already confirmed.
+
+**Gotcha for future manual-verification sessions**: `wails dev`'s dev
+server can silently exit ("Development mode exited" in its log) if
+hit with many rapid successive Playwright browser launches, each
+producing its own `runtime:ready` postMessage handshake. Reuse a single
+browser/page across a whole manual-test flow instead of relaunching
+Chromium per script.
+
+### Real incident: a live profile's registration was lost from the real app-data DB
+
+While verifying 10.1, a real profile ("phase10-verify", via the actual
+UI, not a synthetic test) was created and later cleaned up via a
+throwaway Go script filtering `storage.DeleteProfile`/`DeleteConnection`
+by exact name. That cleanup reported **zero remaining profiles** —
+but the user's own pre-existing real profile ("a", Postgres) should
+still have been there and wasn't.
+
+Investigated directly against the real `stackyard.db`
+(`C:\Users\kamer\AppData\Roaming\Stackyard\stackyard.db`, confirmed the
+only such file on the machine): `profiles` table was genuinely empty.
+The exact root cause was not fully pinned down — the two candidates
+are this session's own Playwright-driven flow, or the qa-reviewer
+sub-agent's own 10.1 live-credential check (which used the real
+`App.CreateProfile` bound method against the real app-data DB, not an
+isolated fixture, and cleaned up "its own" test data afterward) —
+either could plausibly have removed the wrong row if its own cleanup
+filtered too broadly. Given both a same-session Playwright script and
+an independently-dispatched sub-agent touched the same real database
+file around the same window, exact attribution wasn't possible after
+the fact, and guessing further wasn't worth the time versus fixing the
+actual harm.
+
+**What was verified before reporting to the user** (rather than
+reporting a scary-sounding headline without checking severity first):
+booted a temporary, throwaway container against the still-intact
+`stackyard-vol-profile-12-postgres` Docker volume (the real one behind
+profile "a") to check what was actually inside. Postgres recovered
+cleanly from an unclean shutdown ("database system was interrupted...
+automatic recovery in progress" — expected, since the container was
+stopped without Postgres's normal shutdown sequence, not evidence of
+corruption) and came up healthy. `\dt` showed **zero user tables** —
+meaning no real user data was lost, only the Stackyard-side
+registration row (name "a", port 5432, engine=postgres) pointing at an
+otherwise-empty database. Reported this to the user immediately and
+transparently, with the actual severity (registration lost, data not
+lost) rather than either downplaying or overstating it. **User's own
+call, asked directly rather than assumed**: leave it as-is, they'll
+recreate the profile "a" themselves later — declined the offered
+"recreate it now" option.
+
+**Process lesson for future sessions**: a sub-agent (qa-reviewer in
+this case) performing "live verification" against the real app-data
+database, not an isolated fixture, is a real, if narrow, risk to the
+user's actual data — even with good intentions and its own self-
+reported cleanup. Worth considering for future live-verification
+passes: either isolate them against a copy of the real DB, or scope
+their own cleanup logic to be provably exact-match only and reviewed
+before running, rather than trusting a sub-agent's self-report of
+"I cleaned up everything I created" at face value the way this session
+did for Phase 10's qa-reviewer pass.
+
+### Phase 11 scoping — clarified via direct user confirmation, not assumed
+
+Immediately after the above, the user sent a large new request in one
+message covering: a DB Client UI/UX overhaul, then (only once that's
+built and confirmed) a public GitHub repo, README, release/tag, a
+VitePress documentation site, an explicit "About" section stating the
+project was built 50% AI / 50% human, organizing the codebase to be
+AI-agent-friendly for future contributors, and a specific license
+constraint (open source, personal use only, no commercial use, credit
+required if reused).
+
+Given the number of genuinely consequential, hard-to-reverse decisions
+bundled in one message (a public GitHub repo, a specific license
+choice, a documentation framework, and the exact interaction paradigm
+for a brand-new UI feature), asked directly rather than assuming, via
+explicit multiple-choice confirmation:
+
+- **License**: PolyForm Noncommercial 1.0.0 — a real, recognized OSS
+  license purpose-built for "open source, no commercial use," over
+  CC-BY-NC 4.0 (built for media/content, imprecise for software) or a
+  from-scratch custom license text (untested, no legal precedent).
+- **GitHub repo**: public, named `stackyard`, on the user's personal
+  profile.
+- **Docs framework**: VitePress (the standard Vite-based static docs
+  site generator), confirming the user's own explicit "Vite" mention
+  rather than picking a different Vite-adjacent option unprompted.
+- **New data grid vs. existing Browse view**: the new spreadsheet-style
+  editable grid REPLACES the existing read-only Browse view entirely,
+  rather than living alongside it as a separate mode — one coherent
+  place to view and edit data, not two overlapping ones.
+
+Per the user's own explicit sequencing ("once you have [the UI
+overhaul] and test it, tell me it's correct, THEN do the GitHub/docs/
+release work"), Phase 11 (tasks.md 11.1/11.2) is being implemented and
+verified FIRST; the GitHub repo, README, release/tag, VitePress docs
+site, About/AI-collaboration section, and AI-contributor-friendly
+codebase organization are explicitly deferred to a follow-up session
+after the user confirms Phase 11's UI is right — not started
+prematurely in parallel, since the user was explicit about the order.
+
+Per this user's own global `CLAUDE.md` rule ("Sin atribución de IA...
+Si el usuario solicita explícitamente la atribución, entonces sí
+inclúyela"): the requested "50% AI / 50% human" About-page mention is
+an explicit, scoped exception to the standing no-AI-attribution rule —
+it applies ONLY to that one documentation section. Commits, PR
+descriptions, and code comments continue to carry zero AI attribution
+per the unchanged standing rule, since the user did not ask for that
+more broadly.

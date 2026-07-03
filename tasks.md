@@ -201,3 +201,30 @@ scoped and can land as its own increment; see `docs/STATE.md`'s Phase
       introspection.
 - [x] **10.5** DB Client: export an existing connection's schema as a
       real Drizzle `schema.ts` file, same introspection as 10.4.
+
+## Phase 11 — v1.2: DB Client UI/UX overhaul (post-v1 scope)
+
+Also post-v1 feedback, triggered by real hands-on use: the user found
+the DB Client page "everything compressed into one long scrolling
+page," hard to follow without external explanation, and found table
+creation/browsing hard to discover and clunky to use compared to a
+normal DB GUI client (TablePlus/DBeaver-style). See `docs/STATE.md`'s
+Phase 11 section for the exact clarified scope confirmed with the user
+(layout paradigm, license choice, GitHub repo plan, docs framework —
+all decided via explicit user confirmation, not assumed).
+
+- [ ] **11.1** DB Client: replace the single long-scrolling page with a
+      3-panel layout — left sidebar (saved connections + the active
+      connection's schema/table tree with quick actions), center panel
+      (query editor / data grid tabs per open connection), right panel
+      or collapsible section (template gallery, snippets, query
+      history) — so the page is self-explanatory without needing it
+      explained to a new user.
+- [ ] **11.2** DB Client: a spreadsheet-style editable data grid that
+      REPLACES the existing read-only "Browse" view — double-click a
+      cell to edit it inline (real `UPDATE`), right-click a row for a
+      context menu (delete row, at minimum), an "+ Add row" action
+      (real `INSERT`), for Postgres/MySQL/MongoDB. Tables without an
+      identifiable primary key stay read-only with a clear reason
+      shown, since there's no safe way to target a single row for
+      UPDATE/DELETE without one.
