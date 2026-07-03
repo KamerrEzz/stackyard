@@ -4,6 +4,7 @@ export default defineConfig({
   title: "Stackyard",
   description:
     "A local Docker-based database environment manager and multi-engine DB client.",
+  base: "/stackyard/",
   cleanUrls: true,
   themeConfig: {
     nav: [
