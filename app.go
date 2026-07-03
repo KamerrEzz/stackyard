@@ -18,6 +18,7 @@ import (
 	"stackyard/internal/storage"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
+	"github.com/google/uuid"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -61,6 +62,12 @@ const (
 	// so an unreachable host fails fast instead of hanging the UI (tasks.md
 	// 3.4, spec.md §4.1's "one-click Test connection" requirement).
 	testConnectionTimeout = 5 * time.Second
+
+	// openConnectionTimeout bounds OpenConnection's Connect+Ping round trip,
+	// the same budget testConnectionTimeout gives TestConnection, so opening
+	// a query editor session against an unreachable host fails fast instead
+	// of hanging the UI (tasks.md 3.6).
+	openConnectionTimeout = 5 * time.Second
 )
 
 // App struct is the ONLY surface bound to the frontend — every other package
@@ -81,6 +88,34 @@ type App struct {
 	statusWatcherCancel  context.CancelFunc
 	statusWatcherWG      sync.WaitGroup
 	statusWatcherRunning bool
+
+	// querySessions/queryCancels back OpenConnection/RunQuery/CancelQuery/
+	// CloseConnectionSession (tasks.md 3.6): querySessions holds one live,
+	// connected dbengine.Engine per generated session ID, keyed so multiple
+	// tabs (task 3.8) can each hold their own independent connection rather
+	// than the app assuming exactly one is ever open. queryCancels holds the
+	// context.CancelFunc for whichever RunQuery call is currently in flight
+	// for a given session ID, so a separate, concurrently-arriving
+	// CancelQuery call can reach in and cancel it (spec.md §4.6) — Wails has
+	// no built-in primitive for cancelling an in-flight bound-method call,
+	// so this map is the cancellation hook. The two maps are guarded by
+	// their own mutex rather than sharing one: a query's cancel func churns
+	// on every RunQuery call while a session's engine persists across many
+	// of them, and sharing one lock would serialize session lookups behind
+	// query start/finish for no benefit.
+	querySessionsMu sync.Mutex
+	querySessions   map[string]*querySession
+
+	queryCancelsMu sync.Mutex
+	queryCancels   map[string]context.CancelFunc
+}
+
+// querySession holds one live, connected dbengine.Engine bound to a
+// generated session ID (see OpenConnection), letting RunQuery/CancelQuery/
+// CloseConnectionSession reference it across separate IPC calls without the
+// frontend ever seeing the Engine value itself.
+type querySession struct {
+	engine dbengine.Engine
 }
 
 // NewApp creates a new App application struct
@@ -117,6 +152,7 @@ func (a *App) startup(ctx context.Context) {
 
 func (a *App) shutdown(_ context.Context) {
 	a.StopStatusWatcher()
+	a.closeAllQuerySessions()
 
 	if a.db != nil {
 		_ = a.db.Close()
@@ -124,6 +160,185 @@ func (a *App) shutdown(_ context.Context) {
 	if a.docker != nil {
 		_ = a.docker.Close()
 	}
+}
+
+// closeAllQuerySessions cancels every in-flight RunQuery call and closes
+// every live Engine session (see OpenConnection), called from shutdown() so
+// a still-open DB Client tab never leaks a database connection past app
+// exit.
+func (a *App) closeAllQuerySessions() {
+	a.queryCancelsMu.Lock()
+	for _, cancel := range a.queryCancels {
+		cancel()
+	}
+	a.queryCancels = nil
+	a.queryCancelsMu.Unlock()
+
+	a.querySessionsMu.Lock()
+	defer a.querySessionsMu.Unlock()
+	for _, session := range a.querySessions {
+		_ = session.engine.Close()
+	}
+	a.querySessions = nil
+}
+
+func (a *App) putQuerySession(id string, session *querySession) {
+	a.querySessionsMu.Lock()
+	defer a.querySessionsMu.Unlock()
+	if a.querySessions == nil {
+		a.querySessions = make(map[string]*querySession)
+	}
+	a.querySessions[id] = session
+}
+
+func (a *App) getQuerySession(id string) (*querySession, bool) {
+	a.querySessionsMu.Lock()
+	defer a.querySessionsMu.Unlock()
+	session, ok := a.querySessions[id]
+	return session, ok
+}
+
+func (a *App) deleteQuerySession(id string) (*querySession, bool) {
+	a.querySessionsMu.Lock()
+	defer a.querySessionsMu.Unlock()
+	session, ok := a.querySessions[id]
+	if ok {
+		delete(a.querySessions, id)
+	}
+	return session, ok
+}
+
+func (a *App) putQueryCancel(id string, cancel context.CancelFunc) {
+	a.queryCancelsMu.Lock()
+	defer a.queryCancelsMu.Unlock()
+	if a.queryCancels == nil {
+		a.queryCancels = make(map[string]context.CancelFunc)
+	}
+	a.queryCancels[id] = cancel
+}
+
+func (a *App) popQueryCancel(id string) (context.CancelFunc, bool) {
+	a.queryCancelsMu.Lock()
+	defer a.queryCancelsMu.Unlock()
+	cancel, ok := a.queryCancels[id]
+	if ok {
+		delete(a.queryCancels, id)
+	}
+	return cancel, ok
+}
+
+// OpenConnection dials fields' engine and keeps the resulting connection
+// alive server-side, returning a session ID the frontend passes to
+// RunQuery/CancelQuery/CloseConnectionSession for as many queries as it
+// wants, across as many separate IPC calls as it wants (tasks.md 3.6).
+// Unlike TestConnection, which connects-tests-closes in one shot, the
+// dbengine.Engine constructed here is stored in a's session map and stays
+// open until CloseConnectionSession closes it (or app shutdown does, via
+// closeAllQuerySessions). Every call opens its own new, independent
+// session, even for identical fields — callers that want several
+// concurrently queryable tabs against the same connection (tasks.md 3.8)
+// are expected to open one session per tab rather than sharing a single
+// session across them, since RunQuery only tracks one in-flight query's
+// cancel func per session ID (see RunQuery's doc comment).
+func (a *App) OpenConnection(fields ConnectionFormFields) (string, error) {
+	if err := validateConnectionFormFields(fields); err != nil {
+		return "", fmt.Errorf("open connection: %w", err)
+	}
+
+	engine, err := newTestEngine(fields)
+	if err != nil {
+		return "", fmt.Errorf("open connection: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, openConnectionTimeout)
+	defer cancel()
+
+	if err := engine.Connect(ctx); err != nil {
+		return "", fmt.Errorf("open connection: %w", err)
+	}
+	if err := engine.Ping(ctx); err != nil {
+		_ = engine.Close()
+		return "", fmt.Errorf("open connection: %w", err)
+	}
+
+	id := uuid.NewString()
+	a.putQuerySession(id, &querySession{engine: engine})
+	return id, nil
+}
+
+// RunQuery executes query against the live Engine behind sessionID (see
+// OpenConnection) and returns its raw dbengine.QueryResult. The query runs
+// under a context this same App can cancel from a separate, concurrently
+// arriving CancelQuery(sessionID) call (spec.md §4.6's "cancellable
+// mid-run" requirement): Wails has no built-in primitive for cancelling an
+// in-flight bound-method call, so RunQuery itself accepts no cancellation
+// token — instead it derives a cancellable context, records that
+// context's CancelFunc in a.queryCancels for exactly the duration of this
+// call, and CancelQuery looks that same func up by sessionID to invoke it.
+// Only one query may be in flight per session at a time: starting a
+// second RunQuery on the same sessionID before the first finishes
+// overwrites its cancel func, so a CancelQuery call after that point
+// cancels the second (newest) query, not the first — callers needing
+// independent, simultaneously cancellable queries should open a separate
+// session per query rather than share one (see OpenConnection).
+func (a *App) RunQuery(sessionID string, query string) (*dbengine.QueryResult, error) {
+	session, ok := a.getQuerySession(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("run query: no open connection session %q", sessionID)
+	}
+
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.putQueryCancel(sessionID, cancel)
+	defer func() {
+		a.popQueryCancel(sessionID)
+		cancel()
+	}()
+
+	result, err := session.engine.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("run query: %w", err)
+	}
+	return result, nil
+}
+
+// CancelQuery cancels the RunQuery call currently in flight for sessionID,
+// if any, by invoking the context.CancelFunc RunQuery registered for its
+// duration (spec.md §4.6). It is not an error to call this when no query is
+// running for sessionID: the cancel window may already have closed by the
+// time this call arrives (the query finished, or was already cancelled),
+// and that race is expected, ordinary behavior rather than a bug to
+// surface as an error.
+func (a *App) CancelQuery(sessionID string) error {
+	cancel, ok := a.popQueryCancel(sessionID)
+	if !ok {
+		return nil
+	}
+	cancel()
+	return nil
+}
+
+// CloseConnectionSession closes the live Engine behind sessionID and
+// removes it from a's session map (tasks.md 3.6). Any query still in
+// flight for this session is cancelled first — closing the underlying
+// Engine out from under a running Query would otherwise race the driver's
+// own connection teardown. Closing an unknown or already-closed sessionID
+// is an error, not a silent no-op, since task 3.8's multi-tab shell needs
+// to be able to tell when its own bookkeeping has drifted from the
+// backend's.
+func (a *App) CloseConnectionSession(sessionID string) error {
+	if cancel, ok := a.popQueryCancel(sessionID); ok {
+		cancel()
+	}
+
+	session, ok := a.deleteQuerySession(sessionID)
+	if !ok {
+		return fmt.Errorf("close connection session: no open connection session %q", sessionID)
+	}
+
+	if err := session.engine.Close(); err != nil {
+		return fmt.Errorf("close connection session: %w", err)
+	}
+	return nil
 }
 
 func (a *App) requireDB() (*sql.DB, error) {

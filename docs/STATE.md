@@ -1071,3 +1071,46 @@ Sources checked directly (not recalled from training): `pgx/v5@v5.10.0`
   `wails dev` fresh, confirmed the connection was still listed, then
   Load/Delete both round-tripped correctly — not just asserted via a
   unit test against a temp DB.
+
+### Monaco editor + Run Query wiring (3.6) — `app.go` + `QueryEditor.tsx`
+
+- **Session-management API**: `OpenConnection(fields) (sessionID string, err error)`,
+  `RunQuery(sessionID, query) (*dbengine.QueryResult, error)`,
+  `CancelQuery(sessionID) error`, `CloseConnectionSession(sessionID) error`.
+  Backed by two mutex-guarded maps on `App`: live `Engine` per session,
+  and the in-flight query's `context.CancelFunc` per session.
+  `shutdown()` now closes all open sessions — no leaked connections when
+  the app quits with tabs still open.
+- **Cancellation is real, proven twice**: an integration test aborted a
+  `pg_sleep(30)` in ~500ms (`context canceled`, not a client-side
+  timeout); a manual Playwright pass against a live throwaway Postgres
+  container confirmed the same for a `pg_sleep(10)` (~815ms recovery).
+- **Built for multi-tab (3.8) readiness**: every `OpenConnection` creates
+  an independent session, even for identical connection fields — no
+  implicit sharing. Only one in-flight query is tracked per session
+  (concurrent `RunQuery` calls on the SAME session overwrite each
+  other's cancel func — documented, not silently broken; independent
+  concurrent cancellation requires separate sessions, which is exactly
+  what separate tabs will naturally have). `CloseConnectionSession` on
+  an unknown ID errors rather than no-oping, so tab-bookkeeping bugs in
+  3.8 are detectable instead of silently swallowed.
+- **Real bug caught and fixed — Monaco defaulted to CDN loading.**
+  `@monaco-editor/react`'s default loader fetches Monaco from
+  `cdn.jsdelivr.net` at runtime — a silent violation of spec.md §5's
+  local-only NFR that would have gone unnoticed without checking. Caught
+  because the first build's JS bundle was suspiciously small. Fixed by
+  installing `monaco-editor` directly and adding
+  `frontend/src/lib/monacoSetup.ts`, which wires only the base editor
+  worker and calls `loader.config({monaco})` before any `<Editor>`
+  mounts — verified via captured network traffic showing zero external
+  requests during a full manual test pass.
+- **Known tradeoff, not fixed now**: bundling all of `monaco-editor`
+  pulls in ~90 per-language chunks (~3.9MB pre-gzip main JS chunk,
+  confirmed by `pnpm run build`'s own chunk-size warning). Left as-is —
+  correctness (local-only, no CDN) mattered more than bundle size for
+  this task. **Flagged as a candidate for task 9.1's performance pass**:
+  scope the Monaco import to just the `sql` language rather than every
+  built-in language Monaco ships.
+- Postgres/MySQL both map to Monaco's built-in `sql` language mode (no
+  separate per-dialect SQL modes exist in Monaco out of the box); other
+  engines map to `plaintext` until Phases 5/6.

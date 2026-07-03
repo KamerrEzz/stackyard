@@ -1,3 +1,26 @@
+export namespace dbengine {
+	
+	export class QueryResult {
+	    Columns: string[];
+	    Rows: any[][];
+	    RowsAffected: number;
+	    Duration: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Columns = source["Columns"];
+	        this.Rows = source["Rows"];
+	        this.RowsAffected = source["RowsAffected"];
+	        this.Duration = source["Duration"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
 	export class ConnectionFormFields {

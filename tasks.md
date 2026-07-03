@@ -75,7 +75,7 @@ regardless of whether a task fully closes.
       "Test connection" button.
 - [x] **3.5** Saved connections list backed by the `connections` table;
       persist across restarts.
-- [ ] **3.6** Integrate Monaco editor (`@monaco-editor/react`) with SQL
+- [x] **3.6** Integrate Monaco editor (`@monaco-editor/react`) with SQL
       syntax highlighting; wire "Run query" to `Engine.Query`.
 - [ ] **3.7** Read-only results grid rendering query output (types,
       pagination) for both engines.

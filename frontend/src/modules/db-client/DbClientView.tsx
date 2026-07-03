@@ -8,6 +8,7 @@ import {
     TestConnection,
 } from '../../../wailsjs/go/main/App'
 import type {main, storage} from '../../../wailsjs/go/models'
+import QueryEditor from './QueryEditor'
 
 type Engine = 'postgres' | 'mysql' | 'mongodb' | 'redis'
 
@@ -69,6 +70,9 @@ function DbClientView() {
     const [saveName, setSaveName] = useState('')
     const [saveState, setSaveState] = useState<TestState>('idle')
     const [saveMessage, setSaveMessage] = useState<string | null>(null)
+
+    const [connectionReady, setConnectionReady] = useState(false)
+    const [connectionEpoch, setConnectionEpoch] = useState(0)
 
     const applyParsedFields = useCallback((fields: main.ConnectionFormFields) => {
         setEngine(fields.Engine as Engine)
@@ -158,6 +162,8 @@ function DbClientView() {
                 setParseError(null)
                 setPasteValue('')
                 applyParsedFields(fields)
+                setConnectionReady(true)
+                setConnectionEpoch((epoch) => epoch + 1)
                 await refreshSavedConnections()
             } catch (err) {
                 setSavedConnectionsError(String(err))
@@ -196,11 +202,23 @@ function DbClientView() {
             })
             setTestState('success')
             setTestMessage('Connected successfully.')
+            setConnectionReady(true)
+            setConnectionEpoch((epoch) => epoch + 1)
         } catch (err) {
             setTestState('error')
             setTestMessage(String(err))
         }
     }, [database, engine, host, paramRows, password, port, username])
+
+    const currentFields: main.ConnectionFormFields = {
+        Engine: engine,
+        Host: host,
+        Port: Number(port) || 0,
+        Username: username,
+        Password: password,
+        Database: database,
+        Params: rowsToParams(paramRows),
+    }
 
     return (
         <div className="flex flex-col gap-6">
@@ -428,6 +446,8 @@ function DbClientView() {
                     </div>
                 ))}
             </div>
+
+            {connectionReady && <QueryEditor key={connectionEpoch} fields={currentFields} />}
         </div>
     )
 }
