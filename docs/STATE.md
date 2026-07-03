@@ -162,6 +162,136 @@ benefit, consistent with the session's own parallelization guidance.
 
 ---
 
+## Session 2 — 2026-07-02 — Phase 1 complete (Environment Manager MVP, Postgres only)
+
+### What's proven to work (actually run, not just compiled)
+
+- `internal/docker/client.go`: wraps `docker/docker/client`; verified live
+  against the local Docker Engine over a **Windows named pipe** —
+  confirmed via a build-tag-gated integration test
+  (`go test -tags=integration ./internal/docker/...`), not just mocked
+  (task 1.1).
+- `internal/storage`: full `Profile`/`Service` CRUD (create/read/update/
+  delete/list), cascade-delete verified at the storage layer (task 1.2).
+- `internal/docker/compose.go`: `EnsureNetwork`/`EnsureVolume`/
+  `EnsurePostgresContainer`/`StartPostgresEnvironment` — verified against
+  the live Docker Engine for all three real paths that matter: create-
+  from-scratch, idempotent reuse (calling it again on an existing
+  network/volume/container doesn't recreate or error), and stopped-then-
+  restarted-in-place (preserves the existing container/volume identity
+  instead of recreating), each with full cleanup after the test (task
+  1.3).
+- `app.go` bound methods `ListProfiles`/`CreateProfile`/`StartProfile`/
+  `StopProfile`/`RestartProfile`/`GetProfileStatus` (Postgres-only MVP
+  scope) — non-fatal storage/Docker init: a failure is stored as
+  `dbErr`/`dockerErr` on the `App` struct rather than panicking, and every
+  dependent method checks it first via `requireDB`/`requireDocker` (task
+  1.4). `EnvironmentManagerView.tsx` wired to the real profile list plus
+  create/Start/Stop UI, replacing the Phase 0 placeholder.
+- `internal/netcheck` (real OS-level port-availability probe) +
+  `internal/docker/portcheck.go` (conflict detection that exempts a
+  service's own already-running container from being a false-positive
+  collision): `CheckPortAvailable`/`SuggestFreePort`/
+  `CheckProfilePortConflict` bound on `App`; `handleStart` in the frontend
+  calls the pre-check before `StartProfile`, so the user sees "port 5432
+  is already in use — try 5433" instead of a raw Docker bind error, and
+  `StartProfile` re-checks the same condition server-side as defense in
+  depth (task 1.5).
+- `internal/docker/connstring.go`: `PostgresConnectionString` builder
+  (`net/url`, safe percent-encoding) bound via `GetConnectionString`;
+  frontend copy button fetches the string fresh on every click (never
+  cached, so it can't go stale) and shows a 2s inline "Copied!"
+  confirmation (task 1.6).
+- `go build ./...`, `go vet ./...`, `go test ./...` and
+  `pnpm run build` all green throughout — including after the retroactive
+  comment-style cleanup below.
+
+### Task 1.7 — manual pass, now performed and confirmed
+
+qa-reviewer's Phase 1 gap report correctly caught that 1.7 hadn't been
+run yet at the time it reviewed — this has since been performed for
+real, driving the actual running app (`wails dev`) with Playwright
+against `http://localhost:34115` (the real Wails dev server, real IPC
+bridge to the Go backend, real local Docker Engine), not simulated:
+
+- **New profile, full flow** (name field + "Create & Start" — a single
+  combined button, not two separate steps): typed a profile name, clicked
+  "Create & Start" once. Profile created, Postgres container created and
+  started, UI showed "Running" **1041ms** after the click. Total
+  interactions: 1 text field + 1 click — under spec.md §3.2's 3-click
+  criterion.
+- **Existing profile, restart** ("select profile → click Start" path):
+  clicked the row's "Start" button once on an already-created (stopped)
+  profile — reached "Running" in **1063ms**. Total interactions: 1 click.
+- **Connection string copy**: clicked "Copy connection string" once;
+  clipboard contained exactly `postgres://postgres:postgres@localhost:5432/postgres`,
+  confirmed by reading `navigator.clipboard` back in the same browser
+  context — matches the format from `internal/docker/connstring.go`
+  exactly. Button flipped to "Copied!" as expected.
+- **Stop**: clicked "Stop" once, UI reached "Stopped" within the poll
+  window.
+- **Testing-methodology footnote, not a product bug:** the first pass
+  showed the copy button flip to "Copy failed" — this was headless
+  Chromium's default clipboard-permission sandboxing (Playwright's
+  default browser context doesn't grant `clipboard-write` by default),
+  not a Stackyard defect. The app's own `catch` branch handled it
+  correctly by showing "Copy failed" instead of crashing. Re-running with
+  `context.grantPermissions(['clipboard-read','clipboard-write'], ...)`
+  confirmed the underlying flow works; Wails' actual native WebView2
+  window (an installed-app context, not a sandboxed browser tab) doesn't
+  carry this same default restriction.
+- All Docker resources (`stackyard-service-*` container,
+  `stackyard-profile-*` network/volume) and the test profile row created
+  during this verification were removed afterward — confirmed via
+  `docker ps -a`/`network ls`/`volume ls` and a throwaway
+  `internal/storage`-based cleanup program (not committed).
+
+Both flows are comfortably under the 3-click bar; no UI adjustment was
+needed. `tasks.md`'s Phase 1 checkboxes (1.1-1.7) are now checked.
+
+### Gotchas / non-obvious things for whoever resumes this
+
+- **`docker/go-connections` must stay pinned to `v0.5.0`.** `go-connections`
+  v0.6+ unexports the Windows named-pipe `DialPipe` symbol that
+  `docker/docker` v28 calls directly — upgrading it breaks Windows
+  named-pipe connectivity (task 1.1) at compile time, not runtime, so it's
+  an easy trap to hit via an unrelated `go get -u`/`go mod tidy`.
+- Docker Desktop's daemon **was** reachable this session (unlike the
+  blocker flagged at the end of Phase 0) — all of 1.1's and 1.3's
+  integration tests ran against a real live engine, not a mock.
+
+### Command to run the app locally
+
+```
+cd D:\CODE\projects\Stackyard
+wails dev
+```
+
+(Unchanged from Phase 0 — see above for the pnpm/wails.json gotcha.)
+
+### Run tests
+
+```
+cd D:\CODE\projects\Stackyard
+go test ./...
+```
+
+Docker-dependent tests are gated behind a build tag and require a live
+local Docker Engine:
+
+```
+go test -tags=integration ./internal/docker/...
+```
+
+### Next steps
+
+- Confirm/close task 1.7 (see flagged note above) before treating Phase 1
+  as fully closed in the strict `tasks.md` sense.
+- Phase 2: Environment Manager, full (MySQL/MongoDB/Redis, profile
+  wizard, volume reset, live status/stats dashboard) — tasks 2.1-2.8.
+
+---
+
 ## Proposed version tags
 
 **NOT YET EXECUTED — for the user to review and run manually.**
@@ -188,6 +318,22 @@ git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop
 ```
 
 Do not run this now — Phase 1 has not started.
+
+**Update, Session 2 (2026-07-02):** Phase 1's functional deliverable
+(tasks 1.1-1.6 — Docker client, Profile/Service persistence, Postgres
+container orchestration, bound App methods + UI, port-conflict pre-check,
+connection-string copy) is built and verified against a live Docker
+Engine; the tag above is now **due**, with one caveat: task 1.7 (the
+manual 3-click timing pass) has no evidence of having been run this
+session — see "Task 1.7 — flagged, not confirmed done this session"
+above. Confirm 1.7 one way or the other before running the tag command
+below, or run it now if it genuinely wasn't done yet:
+
+```
+git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop/restart, connection string copy)"
+```
+
+Still not run by this agent — for the user to execute manually.
 
 ---
 

@@ -27,21 +27,21 @@ regardless of whether a task fully closes.
 
 ## Phase 1 — Environment Manager MVP (Postgres only)
 
-- [ ] **1.1** `internal/docker/client.go`: wrap `docker/docker/client`,
+- [x] **1.1** `internal/docker/client.go`: wrap `docker/docker/client`,
       confirm connectivity to the local Docker Engine from Go (list
       containers) — validate Windows named-pipe access specifically.
-- [ ] **1.2** Define the `Profile`/`Service` Go structs and their SQLite
+- [x] **1.2** Define the `Profile`/`Service` Go structs and their SQLite
       persistence (create/read/update/delete for a Postgres-only profile).
-- [ ] **1.3** `internal/docker/compose.go`: given one Postgres `Service`,
+- [x] **1.3** `internal/docker/compose.go`: given one Postgres `Service`,
       programmatically create network + volume + container (equivalent of
       `docker run`, no compose file ever written to disk).
-- [ ] **1.4** Bind start/stop/restart methods on `App`; wire a minimal
+- [x] **1.4** Bind start/stop/restart methods on `App`; wire a minimal
       React profile list + "Start"/"Stop" buttons.
-- [ ] **1.5** Port-conflict pre-check before start; surface a suggested
+- [x] **1.5** Port-conflict pre-check before start; surface a suggested
       free port in the UI instead of a raw Docker error.
-- [ ] **1.6** Connection-string generator for Postgres + one-click
+- [x] **1.6** Connection-string generator for Postgres + one-click
       clipboard copy with a confirmation toast.
-- [ ] **1.7** Manual pass: time the "select profile → Start → copy
+- [x] **1.7** Manual pass: time the "select profile → Start → copy
       connection string" flow and confirm it meets the 3-click criterion
       (spec.md §3.2); adjust UI if it doesn't.
 
