@@ -217,8 +217,83 @@ This completes **Phase 4.5 — Schema Diagram (Relational)** and, together
 with Phase 4 above, **Module 2's relational feature set for Postgres and
 MySQL** (spec.md §4) — MongoDB and Redis support remain Phases 5/6's job.
 
+- MongoDB Engine (`internal/dbengine/mongo/mongo.go`, official
+  `go.mongodb.org/mongo-driver`, v1): a document-oriented surface deliberately
+  separate from the relational `dbengine.Engine` interface — `ListDatabases`,
+  `ListCollections`, `FindDocuments`/`CountDocuments` with real `limit`/`skip`
+  pagination from the start, `InsertDocument`, `UpdateDocument`,
+  `DeleteDocuments`, `SampleDocuments` (via `$sample`, for the Schema Diagram
+  below). `app.go` gained a parallel `mongoSessions` map alongside the
+  existing SQL `querySessions` map, mirroring the Schema Diagram's earlier
+  precedent of an independent session type rather than one polymorphic
+  abstraction (task 5.1).
+- `internal/dbengine/mongo/convert.go`: recursive BSON→JSON-safe conversion
+  (`primitive.ObjectID`→hex string, `DateTime`/`time.Time`→RFC3339Nano,
+  `Decimal128`→decimal string, `Binary`→base64, `Regex`→pattern, recursing into
+  nested `bson.M`/`bson.A`) so every document crosses the Wails/JSON boundary
+  safely, with `_id` carried end-to-end as a plain hex string (task 5.1).
+- Unified multi-tab shell for MongoDB: `DbClientTab` became a discriminated
+  union (`SqlTab | MongoTab`) sharing the same tab strip as SQL connections —
+  `TabBar`/`tabState.ts` needed zero changes since both were already
+  engine-agnostic. Matches spec.md's "single, coherent UI — no per-engine tool
+  switching" goal more directly than a second, Mongo-only tab strip would have
+  (tasks 5.2-5.4).
+- Document tree/JSON viewer (`MongoDocumentTree.tsx`/`MongoJSONEditor.tsx`/
+  `MongoDocumentView.tsx`): expandable/collapsible document tree with typed
+  scalar rendering (an ObjectID/date display heuristic keyed off `convert.go`'s
+  exact output shapes) and collapsible `array [N items]`/`object {N keys}`
+  summaries; whole-document JSON editing (not per-leaf) with structural
+  validation before save; new-document creation (blank `{}` or
+  duplicate-selected, with `_id` stripped on duplicate); delete with a
+  per-document confirmation dialog (tasks 5.2-5.4).
+- Collection browser with a working find/filter bar (`mongoDocumentHelpers.ts`,
+  `DbClientView.tsx`): reuses the document editor's "must be a JSON object"
+  validation for filter input; a blank string (not `'{}'`) is the canonical
+  "no filter" value, matching the existing server-side
+  `decodeMongoJSONObject` convention; applying a filter resets pagination to
+  `skip=0`, and switching database/collection clears the active filter (task
+  5.5).
+- MongoDB Schema Diagram (`internal/diagram/mongo.go`): samples N documents
+  per collection and infers field shapes, reporting **every observed type**
+  for a field rather than collapsing type variance to "mixed" (a deliberate
+  teaching-oriented choice per spec.md's framing of this feature) — e.g. a
+  field that's a string in some documents and an int in others renders as
+  `int_or_string`; optionality and explicit `null` are tracked as two distinct
+  signals. Nested objects flatten into the same Mermaid entity block
+  (`address.street` → `address_street`); reuses the relational Schema
+  Diagram's Mermaid renderer (`MermaidDiagram.tsx`) rather than a second
+  rendering component. No PK/FK markers are ever emitted for Mongo attributes,
+  and the exact phrase **"Inferred structure - not an enforced relationship"**
+  is baked into both the on-screen badge and the raw generated Mermaid text
+  itself (as a `%%` comment banner), so the caveat survives into a copied/
+  exported diagram, not just the UI. Verified both via exact-string Go tests
+  and by feeding the generated text through Mermaid's real `mermaid.parse()`
+  in Node (task 5.6).
+
+This completes **Phase 5 — MongoDB** (tasks 5.1-5.6) and, together with
+Phases 3/4/4.5, delivers all of **Module 2 — DB Client** (spec.md §4) except
+Redis, which is Phase 6's job.
+
 ### Fixed
 
+- MongoDB auth/`authSource` conflict: `MongoConnectionString`'s database-path
+  segment doubles as the driver's SCRAM `authSource`. Setting `svc.DBName` to
+  a non-admin value while authenticating as the `MONGO_INITDB_ROOT_USER`
+  (which only exists in the `admin` database) failed authentication. Fixed by
+  leaving `DBName` nil for container creation (matching `mongodb.go`'s
+  already-documented Phase 2 fallback) while still exercising a separate named
+  database for document operations, since Mongo creates databases lazily on
+  first write (task 5.1).
+- React 18 StrictMode session-lifecycle race: the Mongo session was opened
+  eagerly in `DbClientView` but only closed in `MongoDocumentView`'s unmount
+  effect — StrictMode's dev-only double-invoke of effects (mount→cleanup→
+  mount) closed the session immediately after opening it, so the "real" mount
+  then tried to list databases against an already-closed session. Fixed by
+  having `MongoDocumentView` open **and** close its own session within one
+  effect, so StrictMode's synthetic cycle opens/closes a throwaway session and
+  the real mount's session is the one actually closed on real unmount — the
+  same pattern that already made `QueryEditor` StrictMode-safe, adapted here
+  for Mongo's eager (not lazy) session-opening need (tasks 5.2-5.4).
 - Docker-integration test container-ID collisions: three of Phase 2's
   parallel tasks independently picked the same hardcoded
   `testProfileID`/`testServiceID` constant (`999002`), and a later pick

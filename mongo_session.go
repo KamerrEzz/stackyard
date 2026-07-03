@@ -207,8 +207,10 @@ func (a *App) FindMongoDocuments(sessionID string, database string, collection s
 }
 
 // CountMongoDocuments returns how many documents in collection match
-// filterJSON (same JSON-object-as-text convention as FindMongoDocuments) —
-// the collection browser's total-count/pagination support (tasks.md 5.5).
+// filterJSON (same JSON-object-as-text convention as FindMongoDocuments).
+// Not currently called by the collection browser, which paginates via a
+// fetched-a-full-page heuristic instead — exposed for a future caller that
+// wants an exact total.
 func (a *App) CountMongoDocuments(sessionID string, database string, collection string, filterJSON string) (int64, error) {
 	session, ok := a.getMongoSession(sessionID)
 	if !ok {

@@ -2117,3 +2117,109 @@ and the inferred-structure Schema Diagram. Three real bugs were caught
 and fixed along the way this phase: a MongoDB auth/authSource conflict,
 a React StrictMode session-lifecycle race, and (from Phase 4) the
 semicolon-splitting/snippet-filtering pair. Next: Phase 6 (Redis).
+
+---
+
+## Session 9 close-out — current phase, last task, next steps
+
+**Current phase:** Phase 5 (MongoDB) is complete and closed —
+`tasks.md` 5.1-5.6 all checked, manually verified end-to-end (see
+"Manual verification — the full Phase 5 flow, done for real" above).
+Per `plan.md` §6, Phase 5's own table entry documents 5.6 (Schema
+Diagram — MongoDB inferred structure) as that phase's own closing task,
+not a separate roadmap number, so all of 5.1-5.6 close together as one
+phase. Together with Phases 3, 4, and 4.5, this delivers all of
+**Module 2 — DB Client** (spec.md §4) for every engine except Redis,
+which is Phase 6's job.
+
+**Last task completed:** 5.5 (collection filter bar), the last
+outstanding task from this phase's parallel wave, followed by a manual
+end-to-end Phase 5 verification pass (real MongoDB container, seeded
+documents, driven through the running app via Playwright).
+
+**In-flight / undecided items carried forward (not blockers, just
+flagged):**
+
+- `mongo-driver` is pinned at `v1` per an earlier explicit instruction,
+  though the module itself prints a deprecation notice recommending
+  `go.mongodb.org/mongo-driver/v2` — a v2 migration is a real future
+  task, not done this phase.
+- `TestConnection`/`newTestEngine` still return "not yet supported" for
+  MongoDB — only `OpenMongoConnection` (the tab-open path) is wired.
+  Whoever next touches the connection UI should decide whether "Test
+  Connection" needs Mongo support before users can validate a Mongo
+  connection string the same way they already can for Postgres/MySQL.
+- Heuristic relationship detection for the MongoDB Schema Diagram (e.g.
+  inferring a reference to another collection from `xId`-shaped field
+  names) was deliberately skipped as a first pass — an acknowledged,
+  explicit stretch goal, not an oversight.
+- The standing credential-encryption-at-rest gap (`plan.md` §4,
+  `Service.PasswordEncrypted`/`Connection.PasswordEncrypted` still
+  plaintext) remains unassigned to any specific task — still flagged
+  here since Session 3's note, unchanged this phase.
+- Integration-test container-ID collisions (the `9990\d\d` convention)
+  still have no automated guard; task 5.1 used **999021** — the next
+  new integration test file should grep the whole repo for every
+  `9990\d\d` literal first, not trust the last-recorded number alone.
+
+**Command to run the app locally:**
+
+```
+cd D:\CODE\projects\Stackyard
+wails dev
+```
+
+(Unchanged since Phase 0 — see the pnpm/`wails.json` gotcha noted in
+Session 1 if this fails with an `EUNSUPPORTEDPROTOCOL`-style error.)
+
+**Run tests:**
+
+```
+cd D:\CODE\projects\Stackyard
+go test ./...
+go test -tags=integration ./internal/docker/... ./internal/dbengine/...
+pnpm run build
+pnpm run test
+```
+
+**Next steps:** Phase 6 — Redis support: key browser, per-type views
+(string/list/hash/set/sorted set), TTL display/edit. This is the last
+new-engine module before Phase 7 (import/export), Phase 8 (migrations),
+and Phase 9 (polish/packaging).
+
+---
+
+## Proposed version tags — Session 9 update (Phase 5 closed)
+
+**NOT YET EXECUTED — for the user to review and run manually.**
+
+Checked `git tag -l` directly this session: **still no tags exist in
+this repo** — none of `v0.1.0`/`v0.2.0`/`v0.3.0`/`v0.4.0` proposed in
+earlier sessions' notes above have been run yet. Consistent with the
+reasoning already established in those notes, that doesn't block
+proposing the next tag now — it points at the exact commit where this
+phase actually closed, independent of when (or whether, yet) any tag
+command is actually executed.
+
+Phase 5 ("MongoDB," tasks 5.1-5.6) closed this session and, per
+`plan.md` §6, completes a full roadmap phase — the mapping (end of
+Phase N → `v0.N.0`) makes this `v0.5.0`. Task 5.6 (Schema Diagram —
+MongoDB) is documented in `plan.md` §6 as Phase 5's own closing task,
+not a separate roadmap number, so it does not get its own tag (the same
+sub-phase-folding treatment already applied to Phase 4.5 above) — it
+folds into `v0.5.0`.
+
+- Phase 5's closing commit: `2b568ff` ("feat: MongoDB collection filter
+  bar - completes Phase 5 (task 5.5)") — current `HEAD`.
+
+```
+git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop/restart, connection string copy)" e743c6b
+git tag -a v0.2.0 -m "Phase 2: Environment Manager, full (MySQL/MongoDB/Redis orchestration, multi-engine wizard, profile duplicate/rename/delete, reset volume, live status/stats dashboard) - completes Module 1" 92ff4bc
+git tag -a v0.3.0 -m "Phase 3: DB Client MVP for Postgres+MySQL (Engine interface, connection-string parser, connection form, saved connections, Monaco editor with cancellable queries, typed results grid, multi-tab shell)" c89a91a
+git tag -a v0.4.0 -m "Phase 4 + 4.5: Relational DB Client, complete (editable grid, multi-statement execution engine at the Go layer, query history, snippets CRUD + Run snippet, Monaco autocomplete) and Schema Diagram for Postgres/MySQL (FK introspection, Mermaid erDiagram generation, zoom/pan, PNG/SVG export) - completes Module 2's relational feature set" 749f127
+git tag -a v0.5.0 -m "Phase 5: MongoDB support (document-oriented Engine via mongo-go-driver, unified multi-tab shell shared with SQL connections, document tree/JSON viewer with in-place editing/create/delete, collection browser with filter bar, inferred-structure Schema Diagram) - completes Module 2's DB Client feature set for every engine except Redis" 2b568ff
+```
+
+None of these five have been run by this agent — all are for the user
+to execute manually, in whatever order/timing they prefer, each
+pointing at the exact commit where that phase actually closed.
