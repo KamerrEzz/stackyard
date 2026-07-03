@@ -2339,6 +2339,32 @@ None of these eight have been run by this agent — all are for the user
 to execute manually, in whatever order/timing they prefer, each
 pointing at the exact commit where that phase actually closed.
 
+**Update, Session 20 (2026-07-03) — Phase 9 in progress, `v1.0.0` PENDING
+(not proposed yet):** Phase 9 ("Polish & Ship v1," tasks 9.1-9.4) is
+**not fully closed this session** — 9.1 (performance pass), 9.2 (visual
+polish pass), and 9.4 (dogfood run) are complete (see "Session 16/17/18/
+19" above for full detail), but 9.3 (Windows installer via NSIS) remains
+genuinely **blocked**: NSIS requires an interactive admin-elevated
+install this environment cannot provide (see Session 16 above for the
+full blocker writeup and exactly what the user needs to do to unblock
+it — install NSIS from an elevated terminal or manually, then run
+`wails build -nsis`).
+
+Per this changelog/state-tracking agent's own operating rule, a semver
+tag is only proposed when a **full** roadmap phase closes — a partial
+phase (9.1/9.2/9.4 done, 9.3 blocked) does not qualify. **`v1.0.0` is
+therefore PENDING, not proposed, until task 9.3 is resolved** (NSIS
+installed, installer built, smoke-tested per the steps in Session 16).
+Once 9.3 closes, `v1.0.0` becomes due under the same mapping already
+established for every prior phase (end of Phase 9 → `v1.0.0`, since
+Phase 9 is this project's final roadmap phase per `plan.md` §6).
+
+`v0.1.0` through `v0.8.0` remain exactly as proposed in the notes
+above — **still not executed by the user, and still not superseded or
+changed by this update.** No new tag is invented for this partial-phase
+state; there is no `v0.9.0` — the mapping is phase-closure-keyed, not
+task-count-keyed, and Phase 9 has not closed.
+
 ---
 
 ## Session 10 — Phase 6 begins: Redis Engine (6.1)
@@ -3839,13 +3865,28 @@ stored service record instead.
   but a real rough edge a user could hit by double-clicking "Save" or
   re-saving after a typo-fix. **v1.1 candidate**: warn or dedupe on an
   exact name+connection-string match before inserting a new row.
-- **The saved-connection list's "click the row text" vs. "click Load"
-  distinction is not obvious.** Both actions open a tab in practice
-  (confirmed), but a first-time user has no visual cue that the row
-  itself is clickable vs. needing the explicit "Load" button — a minor
-  discoverability gap, not a functional one. **v1.1 candidate**: either
-  make only "Load" open a session (remove row-click ambiguity) or add a
-  visible hover/focus affordance to the whole row.
+- **CORRECTED by qa-reviewer's independent Phase 9 pass (see below) — the
+  original claim here was wrong, not just imprecise.** The original text
+  claimed "both actions [clicking the row text and clicking 'Load'] open
+  a tab in practice (confirmed)." That is false: `DbClientView.tsx`'s
+  saved-connection row is a plain `<div>` with no `onClick` handler and
+  no `cursor-pointer` styling at all (confirmed unchanged since Phase 6,
+  commit `0d0197f`) — `handleSaveConnection` doesn't open a tab either,
+  it only saves and refreshes the list. Only the explicit "Load" button
+  (`onClick={() => void handleLoadConnection(...)}`) does anything.
+  The real, corrected friction point: **the row LOOKS like a clickable
+  list item (name, connection string, hover-worthy layout) but clicking
+  anywhere on it except the small "Load" button does nothing at all** —
+  arguably a slightly worse gap than "ambiguous between two working
+  paths," since one of the two isn't a path at all. My own dogfood
+  session's script apparently produced a tab shortly after a row-text
+  click due to test-script sequencing (an actual "Load" click elsewhere
+  in the same driving script), not because the row click itself did
+  anything — a self-inflicted misattribution in my own log, not a real
+  app behavior, caught by an independent adversarial review rather than
+  self-caught. **v1.1 candidate**: either make the row itself clickable
+  (matching its visual affordance) or strip the hover-suggestive styling
+  so it doesn't imply an interaction that isn't there.
 - **Query History requires a manual "Refresh" click** to show queries
   run moments ago in the same session — consistent with this project's
   deliberate no-live-polling design elsewhere (Schema Diagram's
@@ -3881,3 +3922,63 @@ install requiring interactive admin elevation this environment cannot
 provide** — documented precisely in Session 16, not silently skipped.
 This is the final phase of the project; a `docs/HANDOFF.md` deliverable
 should be produced next, per the standing session-opening instructions.
+
+---
+
+## Session 20 close-out — current phase, last task, next steps
+
+**Current phase:** Phase 9 (Polish & Ship v1, tasks 9.1-9.4) — **not
+fully closed.** 9.1 (performance pass), 9.2 (visual polish pass), and
+9.4 (dogfood run) are complete and checked in `tasks.md`; 9.3 (Windows
+installer) is unchecked and **blocked** (see "Session 16" above and the
+"Proposed version tags" update further above for the exact unblock
+steps). This is the final phase on `plan.md` §6's roadmap — no Phase 10
+exists.
+
+**Last task completed:** 9.4 (dogfood run), closing out every task in
+Phase 9 except the blocked 9.3.
+
+**In-flight / undecided item:** task 9.3 — genuinely blocked, not a
+judgment call. NSIS is not installed on this machine and its installer
+requires interactive administrator UAC approval this session cannot
+provide. `wails.json` already has its `info` block (company/product
+name, version, copyright) prepared so the NSIS build can proceed the
+moment NSIS is available — no further Stackyard code or config work is
+needed to unblock this, only the user installing NSIS. See "Session 16"
+above for the full attempt log and exact recovery commands.
+
+**v1.0.0 tag status:** PENDING task 9.3's resolution — see the "Proposed
+version tags — Session 20 update" note further above. `v0.1.0`-`v0.8.0`
+remain proposed-but-unexecuted, unchanged by this session.
+
+**Command to run the app locally:**
+
+```
+cd D:\CODE\projects\Stackyard
+wails dev
+```
+
+(Unchanged since Phase 0 — see Session 1's pnpm/`wails.json` gotcha if
+this fails with an `EUNSUPPORTEDPROTOCOL`-style error.) For a production
+build matching Session 18's performance measurements:
+
+```
+cd D:\CODE\projects\Stackyard
+wails build
+```
+
+Produces `build/bin/stackyard.exe` directly runnable without an
+installer. The installer build (`wails build -nsis`) is blocked per
+above until NSIS is installed.
+
+**Next steps:**
+
+1. Install NSIS (elevated terminal or manual download) and run
+   `wails build -nsis` to unblock and close task 9.3.
+2. Smoke-test the produced installer per Session 16's approximation
+   steps (ideally on a genuinely clean machine/VM without the dev
+   toolchain).
+3. Once 9.3 closes, Phase 9 is fully closed — propose and review the
+   `v1.0.0` tag at that point.
+4. Produce `docs/HANDOFF.md` per the standing session-opening
+   instructions, once Phase 9 (including 9.3) is fully closed.

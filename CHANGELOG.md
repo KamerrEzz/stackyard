@@ -403,8 +403,104 @@ across every engine already built.
 This completes **Phase 8 — Migrations** (tasks 8.1-8.5) for Postgres and
 MySQL.
 
+### Added
+
+- Performance pass (task 9.1): production-build (`wails build`, not
+  `wails dev`) cold-start and idle-memory measurements against spec.md
+  §5's NFR bar, multiple runs each with raw per-run numbers recorded, not
+  just averages. Cold-start steady-state average ≈ 913ms (6 runs,
+  897.5-928.7ms); a 7th run showed a 5.5s outlier on the very first
+  launch of a freshly built binary, attributed to a one-time
+  Windows Defender/SmartScreen scan (confirmed non-representative by
+  rebuilding and re-timing a second binary's own first launch, which came
+  back at 924ms). Idle memory (45s settle, 3 runs each): main
+  `stackyard.exe` process alone ≈ 58MB working set / 72MB private —
+  genuinely light, this is the part of the footprint that is actually
+  Stackyard's own code; the full resident process tree (main process +
+  6 WebView2 Chromium-model helper processes: browser host, GPU, network
+  service, crashpad, renderer) totals ≈ 407MB working set / 267MB
+  private. Reported honestly rather than spun: this full-tree total sits
+  within-to-above the "150-300MB+" Electron-class range spec.md's NFR
+  bar is framed against — not a code bug, but a platform characteristic
+  of WebView2's shared multi-process architecture, structurally the same
+  Chromium multi-process model Electron itself uses. No speculative
+  code changes were made; the app's one existing poller
+  (`StatusDashboard`'s 1.5s status watcher) was confirmed already scoped
+  to component mount/unmount, not running by default at idle.
+- Visual polish pass (task 9.2): a cross-module read of every `.tsx` file
+  in both modules plus the shared shell and design tokens, comparing
+  visually-equivalent elements (buttons, section headers, form-field
+  labels) across modules for drift against the "not generic/AI-template"
+  bar. Confirmed the codebase was already highly consistent (button
+  variants, card padding, border-radius, semantic status colors) despite
+  incremental multi-session authorship; unified three real one-off
+  styling inconsistencies found during the pass — see Fixed below for the
+  bug this pass also caught.
+- Dogfood run (task 9.4): personally drove spec.md §7's full
+  success-definition flow end-to-end through the app's own UI only (no
+  `docker`/`psql` CLI, no Docker Desktop, no external DB client) — create
+  a profile (3 clicks, ~1.6s to "Running"), connect via the DB Client,
+  run real `CREATE TABLE`/`INSERT`/`SELECT` queries against the live
+  container, save and run a snippet, tear down with an honest
+  volume-preservation disclosure in the delete confirmation dialog. Every
+  step genuinely exercised, not simulated. Surfaced three small
+  friction points, logged as a v1.1 backlog rather than fixed mid-flight
+  per this task's own instruction: saved connections have no
+  uniqueness guard on name (repeated saves silently create duplicate
+  rows); the saved-connection row visually suggests it's clickable
+  (name, connection string, list-item layout) but only the small "Load"
+  button actually does anything — the row itself has no click handler;
+  Query History
+  requires a manual refresh to show queries just run in the same session
+  (consistent with this app's existing no-live-polling design elsewhere,
+  not itself a bug).
+
+Task 9.3 (Windows installer build via Wails' NSIS packaging) remains
+**blocked**, not silently skipped: NSIS is not installed on this machine,
+and its installer requires interactive administrator elevation (a UAC
+consent prompt) that this session cannot approve. A non-interactive
+`winget install --id NSIS.NSIS -e` was attempted, verified safe (official
+package, checksum-verified installer), and stalled at the elevation
+prompt — the hung process was killed and confirmed to have left zero
+partial/half-installed state behind. `wails.json` was prepared with an
+`info` block (company/product name, version, copyright) so the NSIS
+template has real values once a build is possible, keeping
+`productVersion` at `"0.0.0"` pending this project's still-unresolved
+real versioning decision. To unblock: from an **elevated**
+("Run as Administrator") terminal, run
+`winget install --id NSIS.NSIS -e --silent --accept-package-agreements --accept-source-agreements`
+(approving the UAC prompt when it appears), then build the installer with
+`wails build -nsis` — expected output
+`build/bin/stackyard-amd64-installer.exe`.
+
 ### Fixed
 
+- Missing `ink-500`/`ink-300` Tailwind color-scale shades (task 9.2):
+  `frontend/tailwind.config.ts`'s custom `ink` color scale defined only
+  `950/900/850/800/700/600/400/200/100` — `ink-500` and `ink-300` were
+  never defined, despite being referenced 75+ times across 17 files
+  (`text-ink-500`/`text-ink-300` and their `bg-`/`border-` variants).
+  Tailwind has no fallback for a custom-named color family the way it
+  does for built-in palettes, so every one of those classes silently
+  compiled to nothing app-wide — the intended muted/tertiary text tier
+  for hints, placeholders, badges, and secondary annotations across
+  nearly every module was un-styled with no build error or visual
+  warning. Fixed by adding both shades, linearly interpolated between
+  their existing neighbors (`ink-300` = midpoint of `ink-200`/`ink-400`;
+  `ink-500` = midpoint of `ink-400`/`ink-600`) so the fix restores every
+  existing callsite's originally-intended appearance from one config
+  change rather than touching 75+ individual classNames.
+- Three smaller one-off styling inconsistencies unified during the same
+  pass (task 9.2), all `className`-only, zero logic/state/props changes:
+  `MongoDocumentView.tsx`'s three form-field labels used a smaller/dimmer
+  typographic tier than every other bound form-field label in the app;
+  `ImportDialog.tsx`'s modal `<h2>` used a one-off larger/bolder/brighter
+  size than every other panel/section header; `ImportDialog.tsx`'s
+  "Confirm import" button used a bordered green-outline variant found
+  nowhere else in the app as a static button style (emerald elsewhere is
+  reserved for transient success feedback) instead of the filled-brass
+  primary style every other CTA in the app uses, including its own
+  sibling button in the same dialog.
 - MongoDB auth/`authSource` conflict: `MongoConnectionString`'s database-path
   segment doubles as the driver's SCRAM `authSource`. Setting `svc.DBName` to
   a non-admin value while authenticating as the `MONGO_INITDB_ROOT_USER`
