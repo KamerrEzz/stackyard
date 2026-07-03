@@ -188,3 +188,117 @@ git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop
 ```
 
 Do not run this now — Phase 1 has not started.
+
+---
+
+## Retroactive comment cleanup — rationale preserved (frontend)
+
+Per `CLAUDE.md`'s comment-style rule, all inline comments were stripped from
+the frontend source (only a required TS triple-slash directive in
+`vite-env.d.ts` was left untouched — not a comment). No logic, JSX, or
+class names changed; `pnpm run build` stayed green throughout. Rationale
+that was previously inline now lives here instead:
+
+- **`PingCheck.tsx`**: this component is the task 0.3 smoke test — it
+  proves the Go↔React IPC round trip and the generated Wails TS bindings
+  work end-to-end, before any real feature is built on top of them.
+- **`EnvironmentManagerView.tsx`** (task 1.4/1.5/1.6, spec.md §3.1-§3.3):
+  - Scope: this view is Postgres-only for the profile list plus
+    Start/Stop. Tasks 1.5 (port-conflict pre-check) and 1.6
+    (connection-string copy) are both implemented within this same file.
+    The multi-engine profile wizard (task 2.4, Phase 2) is deliberately
+    out of scope here.
+  - `handleStart`'s port-conflict pre-check calls
+    `CheckProfilePortConflict` before `StartProfile`, so the user sees
+    "port 5432 is already in use — try 5433" instead of a raw Docker bind
+    error. `StartProfile` re-checks the same condition server-side
+    (defense in depth, see `app.go`) — if the frontend pre-check itself
+    fails (e.g. Docker unreachable), the code intentionally falls through
+    to `StartProfile` rather than blocking Start, and `StartProfile`'s own
+    `requireDocker` guard surfaces a clear error in that case.
+  - `CONFIRMATION_MS` (2000ms) is how long the transient "Copied!"
+    acknowledgment stays visible, satisfying spec.md §3.3's
+    toast/inline-confirmation requirement without a full toast library.
+  - `CopyConnectionStringButton` fetches the connection string fresh from
+    the Go backend (`GetConnectionString`) on every click rather than
+    caching it, so it can't go stale if credentials/port changed since
+    the last render (spec.md §3.3's third acceptance criterion).
+- **`style.css`**: dark mode is the only theme for v1 (spec.md §5),
+  forced at the `html` root rather than behind a class toggle, so there
+  is no light-theme token set to accidentally introduce or maintain.
+- **`tailwind.config.ts`**: `darkMode: 'class'` is kept explicit (instead
+  of `'media'`) even though no toggle exists today, specifically to avoid
+  ever accidentally picking up a user's OS light-mode preference.
+
+---
+
+## Retroactive comment cleanup — rationale preserved (Go side)
+
+Per the project's no-inline-comments rule (`CLAUDE.md`), every Go file was
+swept: only the package doc comment per file and doc comments on exported
+functions/types/consts survive, trimmed for concision. Everything else —
+inline comments, comments on unexported helpers, comments in `_test.go`
+files — was deleted. Where a deleted comment captured a genuinely
+non-obvious decision or gotcha not already covered elsewhere in this
+document, it's preserved below, organized by file.
+
+- **`app.go` — `startup()`'s failure handling.** Storage and Docker are both
+  initialized in `startup`, but a failure in either does NOT crash the app or
+  panic: neither is required to be reachable at app-launch time, only at the
+  point a docker-dependent bound method is actually called. Failures are
+  stored on the `App` struct (`dbErr`/`dockerErr`) instead, and every bound
+  method that needs storage/Docker checks for that stored error first via
+  `requireDB`/`requireDocker`, surfacing a real error string to the frontend
+  rather than a nil-pointer panic. Additionally, `docker.NewClient()` only
+  builds configuration — it doesn't dial the engine — so `startup` follows it
+  with a short-timeout `Ping` to actually prove the daemon is reachable; if
+  that `Ping` fails, the half-verified client is closed and dropped (not kept
+  around), so `docker`-dependent methods report `dockerErr` until the user
+  retries (e.g. after starting Docker Desktop).
+
+- **`app.go` — `nextFreeHostPort`/`CreateProfile`'s port defaulting is a
+  narrow self-collision guard, not real conflict detection.** It only checks
+  ports Stackyard itself has already handed out (via `usedHostPorts`), so a
+  second default profile created back-to-back doesn't collide with the
+  first. It does NOT probe the OS for arbitrary in-use ports — that's what
+  `netcheck.IsPortFree` + `SuggestFreePort`/`CheckProfilePortConflict` are
+  for. Any remaining conflict (something else on the machine already bound
+  to the port) is expected to surface as Docker's own bind error, or be
+  caught by the real pre-start check, not by this helper.
+
+- **`internal/storage/migrations.go` — migration steps must be
+  idempotent/forward-only.** Each `schemaMigration`'s statements must be safe
+  to run against a database already at a later version having never seen
+  that step — in practice this means every statement uses
+  `CREATE TABLE/INDEX IF NOT EXISTS`. This is deliberately NOT a full
+  migration framework (no down-migrations, no per-connection folders); it
+  only ever grows Stackyard's own local schema forward across app versions.
+
+- **`internal/storage/migrations.go` — `applyMigration`'s `PRAGMA
+  user_version = %d` uses `fmt.Sprintf`, not a bind parameter.** This is
+  intentional and not a SQL-injection risk: `PRAGMA user_version` doesn't
+  accept bind parameters at all, and the interpolated value is always a
+  compile-time `int` from `schemaMigrations` — never user input.
+
+- **`internal/storage/services.go` — `UpdateService` takes a full `*Service`
+  rather than individual fields or a partial patch struct.** `Service` has 7
+  mutable columns beyond `ID`/`ProfileID`; Phase 2 (MySQL/MongoDB/Redis
+  config) adds more fields to the same struct, and a full-struct replace
+  means that growth never requires widening `UpdateService`'s parameter
+  list. Callers that want to change one field fetch via `GetService`, mutate
+  it, then call `UpdateService` — the same round-trip pattern
+  `CreateService`/`GetService` already establish.
+
+- **`internal/storage/sqlite.go` — `buildDSN` encodes PRAGMAs into the DSN
+  itself, not as post-connect statements.** SQLite PRAGMAs (`busy_timeout`,
+  `foreign_keys`) are per-connection and don't persist in the database file,
+  so they're passed as `_pragma` query parameters on the `file:` DSN rather
+  than run as separate `PRAGMA` statements after opening — this guarantees
+  every new pooled connection gets them applied automatically.
+
+- **`internal/docker/compose.go` — `ensureImage`'s drain of the pull response
+  is required, not optional cleanup.** `ImagePull` streams progress as
+  newline-delimited JSON; the pull is not actually complete from the
+  engine's perspective until that stream is fully read. Skipping the
+  `io.Copy(io.Discard, rc)` drain (or returning early) would leave the pull
+  racing with whatever tries to use the image next.

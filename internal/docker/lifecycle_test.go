@@ -18,11 +18,6 @@ func TestContainerStateFromInspect_Running(t *testing.T) {
 	}
 }
 
-// TestContainerStateFromInspect_NotRunningPassesThroughStatus covers every
-// documented non-running container.State.Status value, confirming
-// ContainerState doesn't collapse them into a single generic "stopped"
-// string — callers may want to distinguish "exited" from "restarting", for
-// instance.
 func TestContainerStateFromInspect_NotRunningPassesThroughStatus(t *testing.T) {
 	statuses := []string{"created", "exited", "paused", "restarting", "dead", "removing"}
 	for _, status := range statuses {

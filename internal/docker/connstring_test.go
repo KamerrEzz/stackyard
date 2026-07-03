@@ -26,10 +26,6 @@ func TestPostgresConnectionString_AllFieldsSet(t *testing.T) {
 	}
 }
 
-// TestPostgresConnectionString_NilPassword covers the edge case nil-handling
-// creates: a Service with no password set should omit the password segment
-// entirely (no bare trailing ":") rather than embed a literal "nil"/empty
-// placeholder that could be mistaken for a real, blank password.
 func TestPostgresConnectionString_NilPassword(t *testing.T) {
 	svc := storage.Service{
 		ID:         2,
@@ -39,7 +35,6 @@ func TestPostgresConnectionString_NilPassword(t *testing.T) {
 		Username:   strPtr("appuser"),
 		DBName:     strPtr("appdb"),
 		VolumeName: "stackyard-vol-2",
-		// PasswordEncrypted is nil.
 	}
 
 	got := PostgresConnectionString(svc)
@@ -49,10 +44,6 @@ func TestPostgresConnectionString_NilPassword(t *testing.T) {
 	}
 }
 
-// TestPostgresConnectionString_AllNilFallback covers a Service with
-// Username/PasswordEncrypted/DBName all nil (shouldn't happen for a Postgres
-// service created via App.CreateProfile's defaults, but must not panic):
-// falls back to the official postgres image's own implicit defaults.
 func TestPostgresConnectionString_AllNilFallback(t *testing.T) {
 	svc := storage.Service{
 		ID:         3,
@@ -69,10 +60,6 @@ func TestPostgresConnectionString_AllNilFallback(t *testing.T) {
 	}
 }
 
-// TestPostgresConnectionString_SpecialCharactersEscaped confirms a password
-// containing URL-reserved characters is percent-encoded rather than
-// corrupting the URL's structure (e.g. an "@" in the password must not be
-// mistaken for the userinfo/host separator).
 func TestPostgresConnectionString_SpecialCharactersEscaped(t *testing.T) {
 	svc := storage.Service{
 		ID:                4,

@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// openTestDB opens a fresh Stackyard database at a temp-dir path and
-// registers cleanup. Using OpenAt (not Open) keeps tests off the real
-// app-data path.
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
@@ -47,9 +44,6 @@ func TestOpenAt_IsIdempotent(t *testing.T) {
 		t.Fatalf("first OpenAt failed: %v", err)
 	}
 
-	// Insert a row so we can prove the second Open doesn't wipe or
-	// re-create the table (which CREATE TABLE IF NOT EXISTS + a
-	// version-guarded migration runner should both prevent).
 	if _, err := CreateProfile(db1, "idempotency-check"); err != nil {
 		t.Fatalf("seed insert failed: %v", err)
 	}
@@ -81,8 +75,6 @@ func TestOpenAt_IsIdempotent(t *testing.T) {
 func TestOpenAt_EnforcesForeignKeys(t *testing.T) {
 	db := openTestDB(t)
 
-	// services.profile_id references a non-existent profile — this must
-	// fail if foreign_keys enforcement is actually on for this connection.
 	_, err := db.Exec(
 		`INSERT INTO services (profile_id, engine, image_tag, host_port, volume_name)
 		 VALUES (?, ?, ?, ?, ?)`,
@@ -96,9 +88,6 @@ func TestOpenAt_EnforcesForeignKeys(t *testing.T) {
 func TestAppDataDir_ResolvesAndCreatesDirectory(t *testing.T) {
 	tempConfigDir := t.TempDir()
 	t.Setenv("APPDATA", tempConfigDir)
-	// os.UserConfigDir() on non-Windows platforms doesn't read APPDATA;
-	// this assertion is meaningful on Windows (the target platform for
-	// this task) and is a no-op check of the join logic elsewhere.
 
 	dir, err := AppDataDir()
 	if err != nil {

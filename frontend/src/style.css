@@ -10,9 +10,6 @@
     url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
 }
 
-/* Dark mode is the only theme for v1 (spec.md §5) — forced here, at the
-   root, rather than behind a class toggle, so there is no light-theme
-   token set to accidentally introduce or maintain. */
 html {
     @apply bg-ink-950 text-ink-100;
     color-scheme: dark;

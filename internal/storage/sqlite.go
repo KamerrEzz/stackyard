@@ -15,7 +15,7 @@ import (
 	"os"
 	"path/filepath"
 
-	_ "modernc.org/sqlite" // registers the "sqlite" driver
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -25,13 +25,8 @@ const (
 )
 
 // AppDataDir returns the OS-standard per-user application-data directory for
-// Stackyard, creating it if it doesn't already exist.
-//
-// On Windows this resolves to "%APPDATA%\Stackyard" via os.UserConfigDir(),
-// which reads the APPDATA environment variable — matching plan.md §4's
-// documented path. On macOS/Linux, os.UserConfigDir() resolves to their
-// respective platform conventions; this package doesn't special-case
-// Windows beyond relying on the stdlib for cross-platform correctness.
+// Stackyard, creating it if it doesn't already exist. On Windows this
+// resolves to "%APPDATA%\Stackyard" via os.UserConfigDir().
 func AppDataDir() (string, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
@@ -81,10 +76,6 @@ func OpenAt(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("storage: open sqlite database %q: %w", path, err)
 	}
 
-	// modernc.org/sqlite (like most CGO-free SQLite drivers) does not
-	// gracefully multiplex concurrent writers across pooled connections;
-	// a single connection avoids SQLITE_BUSY errors under this app's
-	// single-process, single-writer usage pattern.
 	db.SetMaxOpenConns(1)
 
 	if err := migrate(db); err != nil {
@@ -95,10 +86,6 @@ func OpenAt(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// buildDSN encodes the connection-level PRAGMAs Stackyard depends on
-// (foreign key enforcement, a busy timeout to tolerate brief lock
-// contention) directly into the DSN, since SQLite PRAGMAs are per-connection
-// and don't persist in the database file itself.
 func buildDSN(path string) string {
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(5000)")

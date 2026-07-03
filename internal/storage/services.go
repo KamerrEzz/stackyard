@@ -6,14 +6,9 @@ import (
 )
 
 // CreateService inserts a new Service row scoped to an existing Profile and
-// returns it re-read from the database (so defaults/NULL handling reflect
-// what SQLite actually stored, not just the struct passed in).
-//
-// s.ProfileID must reference an existing Profile — services.profile_id is
-// NOT NULL with an ON DELETE CASCADE FK (migrations.go), so a nonexistent
-// ProfileID surfaces here as a wrapped FK-constraint driver error rather
-// than a distinct sentinel, matching how CreateProfile already surfaces
-// the profiles.name UNIQUE violation the same way.
+// returns it re-read from the database. s.ProfileID must reference an
+// existing Profile; a nonexistent ProfileID surfaces as a wrapped
+// FK-constraint driver error.
 func CreateService(db *sql.DB, s *Service) (*Service, error) {
 	res, err := db.Exec(
 		`INSERT INTO services (profile_id, engine, image_tag, host_port, username, password_encrypted, db_name, volume_name)
@@ -48,8 +43,7 @@ func GetService(db *sql.DB, id int64) (*Service, error) {
 }
 
 // ListServicesByProfile returns every Service belonging to the given
-// Profile, ordered by ID (insertion order) — the order services were added
-// to the profile, which is the most predictable default for a UI list.
+// Profile, ordered by ID (insertion order).
 func ListServicesByProfile(db *sql.DB, profileID int64) ([]Service, error) {
 	rows, err := db.Query(
 		`SELECT id, profile_id, engine, image_tag, host_port, username, password_encrypted, db_name, volume_name
@@ -77,22 +71,9 @@ func ListServicesByProfile(db *sql.DB, profileID int64) ([]Service, error) {
 
 // UpdateService replaces every mutable field of an existing Service in
 // place, keyed by s.ID, and returns the row re-read from the database.
-//
-// Judgment call: this takes a full *Service rather than individual fields
-// or a partial patch struct. Service has 7 mutable columns beyond its ID
-// and ProfileID (Engine, ImageTag, HostPort, Username, PasswordEncrypted,
-// DBName, VolumeName) — Phase 2 (tasks 2.1-2.3) adds MySQL/MongoDB/Redis
-// config on top of the same struct, and a full-struct replace means that
-// growth never requires widening this function's parameter list. Callers
-// that only want to change one field (e.g. a rename) fetch first via
-// GetService, mutate the field, then call UpdateService — the same pattern
-// CreateService/GetService already establish for round-tripping state.
-//
-// s.ProfileID is intentionally NOT part of the UPDATE — a Service moving
-// to a different Profile isn't a real use case anywhere in spec.md (§3.1
-// only duplicates/renames/deletes a whole profile; §3.4 only resets one
-// service's volume in place), so reparenting isn't exposed here. Returns a
-// wrapped sql.ErrNoRows if s.ID doesn't exist.
+// s.ProfileID is intentionally not part of the UPDATE — reparenting a
+// Service to a different Profile isn't supported. Returns a wrapped
+// sql.ErrNoRows if s.ID doesn't exist.
 func UpdateService(db *sql.DB, s *Service) (*Service, error) {
 	res, err := db.Exec(
 		`UPDATE services
@@ -116,12 +97,8 @@ func UpdateService(db *sql.DB, s *Service) (*Service, error) {
 }
 
 // DeleteService removes a single Service row by ID without touching its
-// sibling services or the parent Profile.
-//
-// Like DeleteProfile, this is pure SQLite row deletion — any Docker
-// container/volume cleanup for the service (spec.md §3.4's "reset data")
-// is a docker-layer concern for a later task. Returns a wrapped
-// sql.ErrNoRows if id doesn't exist.
+// sibling services or the parent Profile. Returns a wrapped sql.ErrNoRows if
+// id doesn't exist.
 func DeleteService(db *sql.DB, id int64) error {
 	res, err := db.Exec(`DELETE FROM services WHERE id = ?`, id)
 	if err != nil {

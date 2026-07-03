@@ -1,21 +1,16 @@
 //go:build integration
 
-// Integration test for task 1.3: exercises EnsureNetwork/EnsureVolume/
+// Integration test for compose.go: exercises EnsureNetwork/EnsureVolume/
 // EnsurePostgresContainer (and the StartPostgresEnvironment convenience
 // wrapper) against a live local Docker Engine — no mocks. Requires Docker
 // Desktop/dockerd running; run with:
 //
 //	go test -tags=integration ./internal/docker/...
 //
-// Uses a distinctly-named profile/service and a host port (15432) chosen to
-// avoid colliding with this machine's unrelated zeew_* containers (verified
-// zeew_postgres_dev uses host port 4103, not the 15000+ range used here).
-// Everything created is torn down in t.Cleanup so the test is fully
-// self-cleaning and safely re-runnable.
-//
-// Per the task instructions, a raw TCP dial to the mapped host port is
-// sufficient proof of reachability here — a full Postgres wire-protocol
-// client/driver dependency is explicitly Phase 3 scope, not this task's.
+// Uses a distinctly-named profile/service and host port 15432, chosen to
+// avoid colliding with this machine's unrelated zeew_* containers (verified:
+// zeew_postgres_dev uses host port 4103). Everything created is torn down in
+// t.Cleanup so the test is fully self-cleaning and safely re-runnable.
 package docker
 
 import (
@@ -45,8 +40,6 @@ func TestIntegration_StartPostgresEnvironment(t *testing.T) {
 		t.Fatalf("Ping() failed to reach the local Docker Engine: %v", err)
 	}
 
-	// Synthetic test Service — IDs are made up (no real storage.Profile row
-	// backs this test; compose.go only needs the ID values for naming).
 	const testProfileID int64 = 999001
 	const testServiceID int64 = 999001
 	const testHostPort = 15432
@@ -70,9 +63,6 @@ func TestIntegration_StartPostgresEnvironment(t *testing.T) {
 	networkName := ProfileNetworkName(svc.ProfileID)
 	containerName := ServiceContainerName(svc.ID)
 
-	// Cleanup runs even if the test fails partway through, so re-running
-	// this test never trips over a leftover container/volume/network from a
-	// previous failed run.
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
@@ -100,7 +90,6 @@ func TestIntegration_StartPostgresEnvironment(t *testing.T) {
 		}
 	})
 
-	// --- Step 1: first call creates everything from scratch. ---
 	if err := c.StartPostgresEnvironment(ctx, svc); err != nil {
 		t.Fatalf("StartPostgresEnvironment() (first call, create path) failed: %v", err)
 	}
@@ -111,18 +100,12 @@ func TestIntegration_StartPostgresEnvironment(t *testing.T) {
 	assertContainerRunning(t, ctx, c, containerName)
 	assertPostgresReachable(t, testHostPort)
 
-	// --- Step 2: calling it again on an already-running environment must
-	// be a no-op that reuses everything, not fail or recreate. ---
 	if err := c.StartPostgresEnvironment(ctx, svc); err != nil {
 		t.Fatalf("StartPostgresEnvironment() (second call, already-running reuse path) failed: %v", err)
 	}
 	assertContainerRunning(t, ctx, c, containerName)
 	t.Logf("StartPostgresEnvironment: second call against already-running environment succeeded (reuse path)")
 
-	// --- Step 3: stop the container out-of-band (simulating Docker
-	// Desktop/CLI), then confirm a third call starts it back up rather than
-	// erroring or recreating it — this is the "exists but stopped" branch
-	// task 1.3 explicitly asks to get right for Phase 2's stop/restart work. ---
 	existing, err := c.cli.ContainerInspect(ctx, containerName)
 	if err != nil {
 		t.Fatalf("ContainerInspect before stop-and-restart check failed: %v", err)
@@ -185,9 +168,6 @@ func assertContainerRunning(t *testing.T, ctx context.Context, c *Client, name s
 	t.Fatalf("container %q did not reach running state within timeout, last state: %q", name, lastState)
 }
 
-// assertPostgresReachable dials the mapped host port over raw TCP, retrying
-// briefly since the container can take a moment after "running" to actually
-// accept connections (Postgres's own startup, not just container start).
 func assertPostgresReachable(t *testing.T, hostPort int) {
 	t.Helper()
 	addr := fmt.Sprintf("127.0.0.1:%d", hostPort)

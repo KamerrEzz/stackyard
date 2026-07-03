@@ -2,8 +2,6 @@ package storage
 
 import "testing"
 
-// strPtr is a small test helper for populating Service's nullable
-// (*string) fields inline in table/literal test data.
 func strPtr(s string) *string { return &s }
 
 func TestCreateAndGetService_RoundTrip(t *testing.T) {
@@ -70,9 +68,6 @@ func TestCreateService_NullableFieldsForRedis(t *testing.T) {
 		t.Fatalf("CreateProfile failed: %v", err)
 	}
 
-	// Redis has no username/db_name in the same sense as the other 3
-	// engines (models.go's Service doc comment) — this proves the
-	// nullable columns round-trip as nil rather than empty string.
 	created, err := CreateService(db, &Service{
 		ProfileID:  profile.ID,
 		Engine:     EngineRedis,

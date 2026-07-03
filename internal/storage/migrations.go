@@ -5,17 +5,6 @@ import (
 	"fmt"
 )
 
-// schemaMigration is one ordered, forward-only step in Stackyard's own
-// local-storage schema. Each step's statements must be safe to run against
-// a database already at a later version having never seen this step (in
-// practice: CREATE TABLE/INDEX IF NOT EXISTS), so re-running migrate against
-// an up-to-date database is always a cheap no-op.
-//
-// This is deliberately NOT a full migration framework (no down-migrations,
-// no CLI, no per-connection folders) — that machinery belongs to
-// internal/migrations (Phase 8) for the user's *target* databases. Here we
-// only ever need to grow Stackyard's own local schema forward across app
-// versions, tracked via SQLite's built-in `PRAGMA user_version`.
 type schemaMigration struct {
 	version    int
 	statements []string
@@ -80,10 +69,6 @@ var schemaMigrations = []schemaMigration{
 	},
 }
 
-// migrate applies every schema step newer than the database's current
-// PRAGMA user_version, in order, each inside its own transaction. It is
-// idempotent: calling it against an already-current database runs zero
-// statements.
 func migrate(db *sql.DB) error {
 	var current int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&current); err != nil {
@@ -108,7 +93,7 @@ func applyMigration(db *sql.DB, m schemaMigration) error {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op if already committed
+	defer tx.Rollback() //nolint:errcheck
 
 	for _, stmt := range m.statements {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -116,8 +101,6 @@ func applyMigration(db *sql.DB, m schemaMigration) error {
 		}
 	}
 
-	// PRAGMA user_version does not accept bind parameters; the value here
-	// is a compile-time int from our own migration table, never user input.
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", m.version)); err != nil {
 		return fmt.Errorf("set schema version: %w", err)
 	}

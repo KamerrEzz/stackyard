@@ -1,9 +1,10 @@
 //go:build integration
 
-// Integration test for task 1.1: confirms real connectivity to the local
-// Docker Engine, specifically validating Windows named-pipe transport
-// access (plan.md §7's risk note). Requires a live local Docker Engine —
-// run with: go test -tags=integration ./internal/docker/...
+// Integration test for Docker connectivity: confirms real connectivity to
+// the local Docker Engine, including Windows named-pipe transport. Requires
+// a live local Docker Engine — run with:
+//
+//	go test -tags=integration ./internal/docker/...
 package docker
 
 import (

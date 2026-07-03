@@ -10,11 +10,6 @@ import {
 } from '../../../wailsjs/go/main/App'
 import type {main} from '../../../wailsjs/go/models'
 
-// Task 1.4 scope: Postgres-only profile list + Start/Stop (spec.md §3.1/
-// §3.2). Task 1.5 (port-conflict pre-check) and task 1.6 (connection-string
-// copy) are implemented below. No multi-engine wizard (task 2.4, Phase 2) —
-// deliberately out of scope here.
-
 type ProfileStatus = 'running' | 'stopped' | 'partial' | 'unknown' | 'loading'
 
 interface ProfileRow {
@@ -110,12 +105,6 @@ function EnvironmentManagerView() {
         async (profileId: number) => {
             setRowBusy(profileId, true)
 
-            // Task 1.5 / spec.md §3.2: detect a port conflict BEFORE
-            // attempting Start, so the user sees "port 5432 is already in
-            // use — try 5433" instead of a raw Docker bind error. StartProfile
-            // itself re-checks the same thing server-side (defense in
-            // depth, see app.go), so skipping this pre-check on error here
-            // still leaves that guarantee intact.
             try {
                 const conflict = await CheckProfilePortConflict(profileId)
                 if (conflict.HasConflict) {
@@ -125,9 +114,6 @@ function EnvironmentManagerView() {
                     return
                 }
             } catch {
-                // If the pre-check itself fails (e.g. Docker unreachable),
-                // fall through to StartProfile — it surfaces its own clear
-                // error (requireDocker) rather than silently blocking Start.
             }
 
             try {
@@ -279,22 +265,12 @@ function ProfileCard({row, onStart, onStop}: ProfileCardProps) {
     )
 }
 
-// CONFIRMATION_MS is how long the transient "Copied!" acknowledgment stays
-// visible (spec.md §3.3's "toast/inline confirmation" — a full toast/
-// notification library is explicitly not required for this task).
 const CONFIRMATION_MS = 2000
 
 interface CopyConnectionStringButtonProps {
     serviceId: number
 }
 
-// CopyConnectionStringButton fetches the connection string fresh from the Go
-// backend (GetConnectionString — see app.go/internal/docker/connstring.go)
-// on every click, so it's never a stale/cached value even if credentials or
-// the port changed since the last render (spec.md §3.3's third acceptance
-// criterion). One click copies it to the clipboard via the Wails webview's
-// navigator.clipboard and shows an inline "Copied!" confirmation for
-// CONFIRMATION_MS.
 function CopyConnectionStringButton({serviceId}: CopyConnectionStringButtonProps) {
     const [state, setState] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
     const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)

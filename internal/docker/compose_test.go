@@ -117,10 +117,6 @@ func TestBuildPostgresContainerSpec_AllFieldsSet(t *testing.T) {
 	}
 }
 
-// TestBuildPostgresContainerSpec_NilFieldsOmitted exercises the branching
-// logic that skips env vars for nil Service fields (e.g. a not-yet-fully
-// configured Service) — this is the genuinely testable logic in this
-// function, as opposed to just passing fields through.
 func TestBuildPostgresContainerSpec_NilFieldsOmitted(t *testing.T) {
 	svc := storage.Service{
 		ID:         3,
@@ -129,7 +125,6 @@ func TestBuildPostgresContainerSpec_NilFieldsOmitted(t *testing.T) {
 		ImageTag:   "postgres:16-alpine",
 		HostPort:   15433,
 		VolumeName: "stackyard-vol-3",
-		// Username, PasswordEncrypted, DBName all nil.
 	}
 
 	cfg, _ := buildPostgresContainerSpec(svc, "stackyard-profile-4")
@@ -139,9 +134,6 @@ func TestBuildPostgresContainerSpec_NilFieldsOmitted(t *testing.T) {
 	}
 }
 
-// TestBuildPostgresContainerSpec_PartialFields covers the mixed case: only
-// some of Username/Password/DBName set, confirming each is independently
-// optional rather than all-or-nothing.
 func TestBuildPostgresContainerSpec_PartialFields(t *testing.T) {
 	svc := storage.Service{
 		ID:         5,

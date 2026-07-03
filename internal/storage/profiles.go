@@ -42,13 +42,7 @@ func GetProfile(db *sql.DB, id int64) (*Profile, error) {
 }
 
 // UpdateProfile renames an existing Profile in place and returns the
-// updated row.
-//
-// Only Name is mutable here — CreatedAt is set once at creation and never
-// changes, and ID is the immutable primary key — so "update" and "rename"
-// are the same operation for Profile (unlike Service, which has several
-// mutable fields; see UpdateService's doc comment in services.go for that
-// judgment call). Returns a wrapped sql.ErrNoRows if id doesn't exist.
+// updated row. Returns a wrapped sql.ErrNoRows if id doesn't exist.
 func UpdateProfile(db *sql.DB, id int64, name string) (*Profile, error) {
 	res, err := db.Exec(`UPDATE profiles SET name = ? WHERE id = ?`, name, id)
 	if err != nil {
@@ -66,15 +60,11 @@ func UpdateProfile(db *sql.DB, id int64, name string) (*Profile, error) {
 	return GetProfile(db, id)
 }
 
-// DeleteProfile removes a Profile row by ID.
-//
-// This is pure SQLite row deletion — the services table's ON DELETE CASCADE
-// FK (migrations.go) removes that profile's Services as a consequence, but
-// DeleteProfile itself does nothing Docker-related. spec.md §3.1 requires
-// the user be asked explicitly before a profile's Docker volumes are
-// removed; that confirmation and the actual volume teardown belong to a
-// later docker-layer task, not this storage-layer function. Returns a
-// wrapped sql.ErrNoRows if id doesn't exist.
+// DeleteProfile removes a Profile row by ID. Services belonging to the
+// profile are removed as a consequence of the services table's ON DELETE
+// CASCADE FK, but DeleteProfile itself does nothing Docker-related — volume
+// teardown is a docker-layer concern. Returns a wrapped sql.ErrNoRows if id
+// doesn't exist.
 func DeleteProfile(db *sql.DB, id int64) error {
 	res, err := db.Exec(`DELETE FROM profiles WHERE id = ?`, id)
 	if err != nil {
@@ -93,10 +83,6 @@ func DeleteProfile(db *sql.DB, id int64) error {
 }
 
 // ListProfiles returns every Profile, ordered by name.
-//
-// profiles.name is UNIQUE (migrations.go), so ordering by it is both
-// deterministic and the most useful default for a UI list — callers don't
-// need a separate sort step to show profiles alphabetically.
 func ListProfiles(db *sql.DB) ([]Profile, error) {
 	rows, err := db.Query(`SELECT id, name, created_at FROM profiles ORDER BY name`)
 	if err != nil {

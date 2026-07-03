@@ -8,11 +8,6 @@ import (
 	"stackyard/internal/storage"
 )
 
-// newTestApp returns an App wired to a fresh temp-file SQLite database (via
-// storage.OpenAt, the same helper internal/storage's own tests use to stay
-// off the real app-data path) with no Docker client — SuggestFreePort and
-// CheckPortAvailable need storage but not Docker, so tests for them don't
-// require a live daemon.
 func newTestApp(t *testing.T) *App {
 	t.Helper()
 
@@ -26,10 +21,6 @@ func newTestApp(t *testing.T) *App {
 	return &App{db: db}
 }
 
-// TestApp_CheckPortAvailable_DetectsTakenAndFreePorts covers the App-level
-// wiring around netcheck.IsPortFree: bind a port ourselves to simulate
-// "taken" (task 1.5's required coverage), then release it and confirm it
-// reports free again.
 func TestApp_CheckPortAvailable_DetectsTakenAndFreePorts(t *testing.T) {
 	a := newTestApp(t)
 
@@ -60,10 +51,6 @@ func TestApp_CheckPortAvailable_DetectsTakenAndFreePorts(t *testing.T) {
 	}
 }
 
-// TestApp_SuggestFreePort_SkipsOSLevelTakenPort confirms SuggestFreePort's
-// real OS-level probe (not just the storage-recorded check nextFreeHostPort
-// already covered) skips a port that's genuinely bound by something,
-// even though Stackyard's own storage has never heard of it.
 func TestApp_SuggestFreePort_SkipsOSLevelTakenPort(t *testing.T) {
 	a := newTestApp(t)
 
@@ -82,18 +69,11 @@ func TestApp_SuggestFreePort_SkipsOSLevelTakenPort(t *testing.T) {
 		t.Errorf("SuggestFreePort(%d) = %d, want a port other than the one currently bound", takenPort, got)
 	}
 
-	// The suggestion itself must actually be free right now, otherwise it's
-	// not a useful suggestion.
 	if !a.mustCheckPortAvailable(t, got) {
 		t.Errorf("SuggestFreePort(%d) suggested %d, which is not actually free", takenPort, got)
 	}
 }
 
-// TestApp_SuggestFreePort_SkipsStorageRecordedPort confirms SuggestFreePort
-// also honors ports Stackyard itself has already recorded against another
-// service, even when the OS itself would happily bind them (nothing is
-// actually listening) — otherwise the suggestion could walk the user
-// straight into colliding with one of their own other profiles.
 func TestApp_SuggestFreePort_SkipsStorageRecordedPort(t *testing.T) {
 	a := newTestApp(t)
 
@@ -102,9 +82,6 @@ func TestApp_SuggestFreePort_SkipsStorageRecordedPort(t *testing.T) {
 		t.Fatalf("CreateProfile failed: %v", err)
 	}
 
-	// Pick a candidate starting port; probe the OS for one that's currently
-	// free so we know the ONLY reason SuggestFreePort should skip it is the
-	// storage record, not an OS-level bind failure.
 	recordedPort := findFreePort(t)
 
 	username := "postgres"
@@ -133,10 +110,6 @@ func TestApp_SuggestFreePort_SkipsStorageRecordedPort(t *testing.T) {
 	}
 }
 
-// TestApp_SuggestFreePort_RequiresDB confirms SuggestFreePort surfaces a
-// clear error (via requireDB) instead of a nil-pointer panic when storage
-// never initialized successfully — matching every other bound method's
-// requireDB/requireDocker convention (see app.go's startup doc comment).
 func TestApp_SuggestFreePort_RequiresDB(t *testing.T) {
 	a := &App{}
 
@@ -145,9 +118,6 @@ func TestApp_SuggestFreePort_RequiresDB(t *testing.T) {
 	}
 }
 
-// findFreePort asks the OS for a port, releases it immediately, and returns
-// it — used as a starting point known (at that instant) to be free at the
-// OS level.
 func findFreePort(t *testing.T) int {
 	t.Helper()
 

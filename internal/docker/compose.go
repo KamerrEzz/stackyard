@@ -1,72 +1,47 @@
-// Package docker (this file, compose.go) turns a storage.Service into running
-// Docker resources — network, volume, container — entirely through the Engine
-// API. No docker-compose.yml (or any YAML/JSON file) is ever written to disk;
-// every step below is the SDK equivalent of a manual `docker network create` /
-// `docker volume create` / `docker run` invocation (plan.md §2's architecture
-// diagram, tasks.md 1.3).
+// Package docker (this file, compose.go) turns a storage.Service into
+// running Docker resources — network, volume, container — entirely through
+// the Engine API. No docker-compose.yml or any file is ever written to disk;
+// every step below is the SDK equivalent of a manual `docker network create`
+// / `docker volume create` / `docker run` invocation.
 //
 // # Naming / scoping decisions
 //
 //   - Network: one network PER PROFILE, not per service, named
-//     "stackyard-profile-<profileID>". spec.md §3.1/§3.2 define a profile as
-//     the set of services that start/stop together, and services within the
-//     same profile need to reach each other by container name (e.g. a future
-//     app service talking to this profile's Postgres) — that only works if
-//     they share a network. Per-service networks would make that impossible
-//     without extra plumbing, so the profile is the right scope.
-//   - Volume: uses storage.Service.VolumeName as-is (already assigned by
-//     whatever created the Service row, per plan.md §4) — this file does not
-//     invent a second naming scheme for volumes.
+//     "stackyard-profile-<profileID>" — services within the same profile
+//     need to reach each other by container name, which requires a shared
+//     network.
+//   - Volume: uses storage.Service.VolumeName as-is.
 //   - Container: named "stackyard-service-<serviceID>", deterministic from
-//     the Service's own primary key so repeated calls (task 1.4's "Start")
-//     can find the exact same container again.
+//     the Service's own primary key so repeated "Start" calls find the same
+//     container again.
 //
 // # Idempotency / create-vs-reuse-vs-start logic
 //
 // EnsureNetwork and EnsureVolume both inspect-then-create: if the named
-// resource already exists, it's reused unchanged; only a NotFound error from
-// inspect triggers a create call. Docker network/volume creation itself has
-// no meaningful "config drift" concern for our use (name is the only thing
-// that matters going forward), so reuse is unconditional once the name
-// matches.
+// resource already exists, it's reused unchanged.
 //
-// EnsurePostgresContainer additionally has to decide what "start" means for a
-// container that may already exist in three different shapes:
+// EnsurePostgresContainer decides what "start" means for a container that
+// may already exist in three shapes:
 //
 //  1. No container with this name exists yet -> create it (pulling the image
-//     first if it isn't present locally), then start it.
+//     first if needed), then start it.
 //  2. A container with this name exists and is already running -> no-op,
-//     return its ID. This makes repeated "Start" calls safe (e.g. user
-//     double-clicks Start, or Phase 2's stop/restart logic calls this as part
-//     of a broader "ensure profile is up" routine).
-//  3. A container with this name exists but is NOT running (state
-//     "created"/"exited"/"dead"/"restarting") -> start it in place rather
-//     than removing and recreating it. This preserves the existing volume
-//     mount and container identity across stop/start cycles, which matters
-//     for Phase 2's stop/restart tasks (2.x) that will build on this exact
-//     function — recreating the container on every start would be wasteful
-//     and would risk transient ID churn for anything that came to depend on
-//     the container ID (e.g. stats polling, task 2.7).
+//     return its ID.
+//  3. A container with this name exists but is NOT running -> start it in
+//     place rather than removing and recreating it, preserving the existing
+//     volume mount and container identity across stop/start cycles.
 //
-// What this function deliberately does NOT do (documented as a known gap,
-// not a bug): if an existing container's configuration (image tag, port
-// mapping, env vars) no longer matches the Service row — e.g. the user
-// edited the host port after the container was already created — this
-// function does not detect or reconcile that drift; it just starts the
-// stale container as-is. Handling "recreate when config changed" is a
-// reasonable Phase 2 extension once stop/restart semantics (2.x) exist to
-// decide when it's safe to remove and recreate, but is out of scope for this
-// task.
+// What this deliberately does NOT do: if an existing container's
+// configuration (image tag, port mapping, env vars) no longer matches the
+// Service row, this function does not detect or reconcile that drift — it
+// just starts the stale container as-is.
 //
-// # Known gap carried over from plan.md
+// # Known gap
 //
 // storage.Service.PasswordEncrypted is documented (plan.md §4) as holding an
 // *encrypted* value at rest. This file treats it as already usable as the
-// literal POSTGRES_PASSWORD env var value — i.e., for Phase 1 MVP scope, no
-// decryption step exists yet anywhere in the codebase. Wiring real
-// encryption-at-rest (and the corresponding decrypt-before-use step here) is
-// a separate concern for whichever task ends up owning credential storage
-// properly; this file only notes the gap, it does not attempt to solve it.
+// literal POSTGRES_PASSWORD env var value — no decryption step exists yet
+// anywhere in the codebase.
 package docker
 
 import (
@@ -87,22 +62,16 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
-// postgresContainerPort is the port Postgres listens on *inside* the
-// container — always 5432 regardless of the HostPort the user mapped it to.
 const postgresContainerPort = "5432/tcp"
 
-// postgresDataDir is where the official postgres image expects its data
-// volume to be mounted.
 const postgresDataDir = "/var/lib/postgresql/data"
 
 // managedLabel marks every network/volume/container Stackyard creates, so a
-// future "list everything Stackyard owns" or cleanup routine can filter on it
-// without relying on name-prefix parsing alone.
+// future cleanup routine can filter on it without relying on name-prefix
+// parsing alone.
 const managedLabel = "stackyard.managed"
 
 // ProfileNetworkName returns the deterministic network name for a profile.
-// See the package-level doc comment above for why networks are scoped per
-// profile rather than per service.
 func ProfileNetworkName(profileID int64) string {
 	return fmt.Sprintf("stackyard-profile-%d", profileID)
 }
@@ -143,9 +112,6 @@ func (c *Client) EnsureNetwork(ctx context.Context, profileID int64) (string, er
 
 // EnsureVolume creates the named volume if it doesn't already exist, or
 // returns the existing volume's name unchanged. Safe to call repeatedly.
-//
-// volumeName is taken as-is from storage.Service.VolumeName — this function
-// does not derive or alter the name.
 func (c *Client) EnsureVolume(ctx context.Context, volumeName string) (string, error) {
 	existing, err := c.cli.VolumeInspect(ctx, volumeName)
 	if err == nil {
@@ -189,7 +155,6 @@ func (c *Client) EnsurePostgresContainer(ctx context.Context, svc storage.Servic
 		}
 		return existing.ID, nil
 	case errdefs.IsNotFound(err):
-		// fall through to create below
 	default:
 		return "", wrapContainerInspectErr(err)
 	}
@@ -211,10 +176,10 @@ func (c *Client) EnsurePostgresContainer(ctx context.Context, svc storage.Servic
 	return resp.ID, nil
 }
 
-// StartPostgresEnvironment is the single entrypoint task 1.4's "Start"
-// binding is expected to call for a Postgres service: it ensures the
-// profile's network, the service's volume, and the service's container all
-// exist and the container ends up running, creating only what's missing.
+// StartPostgresEnvironment is the entrypoint the "Start" binding calls for a
+// Postgres service: it ensures the profile's network, the service's volume,
+// and the service's container all exist and the container ends up running,
+// creating only what's missing.
 func (c *Client) StartPostgresEnvironment(ctx context.Context, svc storage.Service) error {
 	if svc.Engine != storage.EnginePostgres {
 		return fmt.Errorf("docker: StartPostgresEnvironment only supports engine %q, got %q", storage.EnginePostgres, svc.Engine)
@@ -232,9 +197,6 @@ func (c *Client) StartPostgresEnvironment(ctx context.Context, svc storage.Servi
 	return nil
 }
 
-// ensureImage pulls svc's image if it isn't already present locally.
-// Checking first (rather than always pulling) keeps repeated "Start" calls
-// fast and avoids a network round-trip once the image has been fetched once.
 func (c *Client) ensureImage(ctx context.Context, imageTag string) error {
 	images, err := c.cli.ImageList(ctx, image.ListOptions{
 		Filters: filters.NewArgs(filters.Arg("reference", imageTag)),
@@ -251,20 +213,12 @@ func (c *Client) ensureImage(ctx context.Context, imageTag string) error {
 		return wrapImagePullErr(err)
 	}
 	defer rc.Close()
-	// Draining the response is required: ImagePull streams progress as
-	// newline-delimited JSON and the pull is not actually complete from the
-	// engine's perspective until the stream is fully read.
 	if _, err := io.Copy(io.Discard, rc); err != nil {
 		return wrapImagePullErr(err)
 	}
 	return nil
 }
 
-// buildPostgresContainerSpec translates a storage.Service into the
-// container.Config/HostConfig pair ContainerCreate needs. Pulled out as a
-// pure function (no Docker calls) specifically so its branching logic —
-// which env vars get set depending on which Service fields are non-nil, the
-// port/volume/network wiring — is unit-testable without a live daemon.
 func buildPostgresContainerSpec(svc storage.Service, networkName string) (*container.Config, *container.HostConfig) {
 	port := nat.Port(postgresContainerPort)
 
@@ -273,8 +227,6 @@ func buildPostgresContainerSpec(svc storage.Service, networkName string) (*conta
 		env = append(env, "POSTGRES_USER="+*svc.Username)
 	}
 	if svc.PasswordEncrypted != nil {
-		// NOTE: treated as plaintext for Phase 1 MVP scope — see the
-		// package doc comment's "Known gap" section.
 		env = append(env, "POSTGRES_PASSWORD="+*svc.PasswordEncrypted)
 	}
 	if svc.DBName != nil {

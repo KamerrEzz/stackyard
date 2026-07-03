@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// sentinel is a distinguishable error used to verify wrapping preserves the
-// original error in the chain (so callers can errors.Is/errors.As through it).
 var sentinel = errors.New("boom")
 
 func TestWrapConnectErr(t *testing.T) {
@@ -52,11 +50,6 @@ func TestWrapListErr(t *testing.T) {
 	}
 }
 
-// TestNewClient_ConstructionOnly verifies NewClient succeeds purely from
-// environment-based configuration (dockerclient.FromEnv + version
-// negotiation option construction) without requiring a live daemon — actual
-// connectivity is exercised in client_integration_test.go, which is the real
-// value of this package's test coverage per task 1.1.
 func TestNewClient_ConstructionOnly(t *testing.T) {
 	c, err := NewClient()
 	if err != nil {

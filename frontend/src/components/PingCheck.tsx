@@ -1,9 +1,6 @@
 import {useState} from 'react'
 import {Ping} from '../../wailsjs/go/main/App'
 
-// Task 0.3 smoke test: proves the Go <-> React IPC round trip and the
-// generated Wails TS bindings work end-to-end before any real feature
-// is built on top of them.
 function PingCheck() {
     const [result, setResult] = useState<string | null>(null)
 

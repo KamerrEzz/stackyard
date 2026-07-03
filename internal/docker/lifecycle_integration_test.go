@@ -1,20 +1,14 @@
 //go:build integration
 
-// Integration test for task 1.4: exercises ContainerState and StopContainer
-// against a live local Docker Engine — no mocks. Requires Docker Desktop/
-// dockerd running; run with:
+// Integration test for lifecycle.go: exercises ContainerState and
+// StopContainer against a live local Docker Engine — no mocks. Requires
+// Docker Desktop/dockerd running; run with:
 //
 //	go test -tags=integration ./internal/docker/...
 //
-// Reuses StartPostgresEnvironment (task 1.3) to get a real running container
-// to stop/inspect, since lifecycle.go's Stop/State methods are engine-
-// agnostic and don't have their own "ensure a container exists" path — they
-// operate on whatever container 1.3's Start path already created.
-//
 // Uses host port 15435, distinct from compose_integration_test.go's 15432 so
-// the two integration tests never collide on a host port, and distinct from
-// this machine's unrelated zeew_* containers (verified: 4102-4103, 25025,
-// 8025 — see compose_integration_test.go's comment for the same check).
+// the two integration tests never collide, and distinct from this machine's
+// unrelated zeew_* containers.
 package docker
 
 import (
@@ -41,9 +35,6 @@ func TestIntegration_ContainerState_And_StopContainer(t *testing.T) {
 		t.Fatalf("Ping() failed to reach the local Docker Engine: %v", err)
 	}
 
-	// Synthetic test Service — IDs are made up (no real storage.Profile row
-	// backs this test; compose.go/lifecycle.go only need the ID values for
-	// naming).
 	const testProfileID int64 = 999002
 	const testServiceID int64 = 999002
 	const testHostPort = 15435
@@ -67,9 +58,6 @@ func TestIntegration_ContainerState_And_StopContainer(t *testing.T) {
 	networkName := ProfileNetworkName(svc.ProfileID)
 	containerName := ServiceContainerName(svc.ID)
 
-	// Cleanup runs even if the test fails partway through, so re-running
-	// this test never trips over a leftover container/volume/network from a
-	// previous failed run.
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
@@ -97,8 +85,6 @@ func TestIntegration_ContainerState_And_StopContainer(t *testing.T) {
 		}
 	})
 
-	// --- Step 0: before anything exists, state is "not_found" and Stop is a
-	// no-op, not an error. ---
 	state, err := c.ContainerState(ctx, containerName)
 	if err != nil {
 		t.Fatalf("ContainerState() before creation failed: %v", err)
@@ -111,7 +97,6 @@ func TestIntegration_ContainerState_And_StopContainer(t *testing.T) {
 		t.Fatalf("StopContainer() on a nonexistent container should be a no-op, got: %v", err)
 	}
 
-	// --- Step 1: bring up a real container via 1.3's Start path. ---
 	if err := c.StartPostgresEnvironment(ctx, svc); err != nil {
 		t.Fatalf("StartPostgresEnvironment() failed: %v", err)
 	}
@@ -125,7 +110,6 @@ func TestIntegration_ContainerState_And_StopContainer(t *testing.T) {
 		t.Fatalf("ContainerState() after start = %q, want %q", state, "running")
 	}
 
-	// --- Step 2: stop it, confirm it's no longer running. ---
 	if err := c.StopContainer(ctx, containerName); err != nil {
 		t.Fatalf("StopContainer() failed: %v", err)
 	}
@@ -139,9 +123,6 @@ func TestIntegration_ContainerState_And_StopContainer(t *testing.T) {
 	}
 	t.Logf("container state after stop: %q", state)
 
-	// --- Step 3: stopping an already-stopped container is a no-op, not an
-	// error — StopProfile must be safe to call on a profile that's already
-	// down. ---
 	if err := c.StopContainer(ctx, containerName); err != nil {
 		t.Fatalf("StopContainer() on an already-stopped container should be a no-op, got: %v", err)
 	}

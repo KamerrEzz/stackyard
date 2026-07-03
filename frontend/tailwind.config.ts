@@ -1,8 +1,5 @@
 import type {Config} from 'tailwindcss'
 
-// v1 ships dark mode only (spec.md §5) — 'class' strategy is unused since
-// there is no toggle, but keeping it explicit avoids ever accidentally
-// picking up a user's OS light-mode preference via the 'media' strategy.
 export default {
     darkMode: 'class',
     content: ['./index.html', './src/**/*.{ts,tsx}'],
