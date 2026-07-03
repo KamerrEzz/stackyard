@@ -14,15 +14,17 @@
 //
 //	go test -tags=integration .
 //
-// Uses test/profile/service IDs 999033 (Postgres) and 999034 (MySQL) — the
-// next free IDs per docs/STATE.md's running 9990\d\d registry as of this
-// session (999001-999032 already taken; grepped the whole repo before
-// picking these — note 999031/999032 are currently double-booked between
-// createtable_integration_test.go and internal/snippettemplates/
-// templates_integration_test.go, a collision between two parallel Phase 10
-// work streams neither could see from the other; flagged here, not fixed,
-// since both files are out of this task's scope). Host ports 15546
-// (Postgres) and 13324 (MySQL), distinct from every other integration
+// Uses test/profile/service IDs 999035 (Postgres) and 999036 (MySQL). An
+// earlier version of this file used 999033/999034 — the same numbers
+// internal/snippettemplates/templates_integration_test.go independently
+// picked, a genuine collision between two parallel Phase 10 work streams
+// that finished their own "grep before picking" checks at close enough
+// moments neither saw the other's choice. Caught and fixed during a later
+// reconciliation pass across all of Phase 10's integration tests (grepping
+// for the exact literal `int64 = 9990\d\d` pattern repo-wide, not just any
+// occurrence of the digits, which is what let the original collision slip
+// through — see docs/STATE.md's Phase 10 reconciliation notes). Host ports
+// 15546 (Postgres) and 13324 (MySQL), distinct from every other integration
 // test's port in this repo. Everything created is torn down in t.Cleanup so
 // the test is fully self-cleaning and safely re-runnable.
 package main
@@ -44,8 +46,8 @@ import (
 
 func TestIntegration_SchemaExport_PostgresForeignKeyRoundTrip(t *testing.T) {
 	const (
-		profileID int64 = 999033
-		serviceID int64 = 999033
+		profileID int64 = 999035
+		serviceID int64 = 999035
 		hostPort        = 15546
 	)
 
@@ -154,8 +156,8 @@ func TestIntegration_SchemaExport_PostgresForeignKeyRoundTrip(t *testing.T) {
 
 func TestIntegration_SchemaExport_MySQLForeignKeyRoundTrip(t *testing.T) {
 	const (
-		profileID int64 = 999034
-		serviceID int64 = 999034
+		profileID int64 = 999036
+		serviceID int64 = 999036
 		hostPort        = 13324
 	)
 
