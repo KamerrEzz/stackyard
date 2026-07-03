@@ -879,3 +879,126 @@ each with its own comment/report noting this as a known gap owned by
 slot (most naturally either late in Phase 2's aftermath or during Phase
 9's polish pass) before v1 ships, rather than continuing to be a
 distributed TODO scattered across 4 files with no single owner.
+
+---
+
+## Session 4 — 2026-07-02 — Phase 3 wave 1 (Engine interface, Postgres/MySQL impls, urlparse)
+
+`internal/dbengine/engine.go`'s `Engine` interface (`Connect`, `Ping`,
+`Query`, `ListSchemas`, `ListTables`, `Close`, plus `QueryResult`/
+`ColumnInfo`/`TableInfo`) was written directly (not delegated) since it's
+the shared contract every later Module 2 task builds on. Three tasks
+then ran in parallel: Postgres/MySQL `Engine` implementations (3.2),
+`urlparse.go` (3.3, fully independent — pure string parsing, no DB
+dependency), and a read-only research task on column-metadata APIs
+(matching the session's own example of researching ahead of 3.8/4.8's
+autocomplete). All landed clean; full build/vet/gofmt/test/integration
+suite green, no Docker leftovers.
+
+### Postgres/MySQL Engine implementations (3.2)
+
+- `postgres.New(connString string) *postgres.Engine` accepts anything
+  `pgxpool.ParseConfig` accepts (a `postgres://` URL or libpq
+  `key=value` form); `mysql.New(dsn string) *mysql.Engine` accepts
+  go-sql-driver's own DSN grammar (`user:pass@tcp(host:port)/db`), NOT a
+  `mysql://` URL — deliberately asymmetric, since forcing URL-parsing
+  into this layer would duplicate `urlparse.go`'s job. **Whoever wires
+  3.4's connection form must translate `ConnectionFields` into a MySQL
+  DSN string before calling `mysql.New`** — this translation doesn't
+  exist yet anywhere in the codebase.
+- **`parseTime=true` is not auto-injected** into the MySQL DSN — without
+  it, DATETIME/TIMESTAMP columns scan as raw byte strings instead of
+  `time.Time`. `mysql.New` is a pure pass-through with no silent
+  mutation of caller input; whoever builds the MySQL DSN in 3.4 needs to
+  add this query param themselves if temporal columns should scan
+  cleanly.
+- **MySQL schema/database are the same thing** — `ListSchemas` returns
+  `information_schema.schemata`'s database list (MySQL's `CREATE SCHEMA`
+  is a literal alias for `CREATE DATABASE`). Both engines' `ListSchemas`
+  exclude their own system namespaces (Postgres: `pg_catalog`,
+  `information_schema`, `pg_%`; MySQL: `mysql`, `information_schema`,
+  `performance_schema`, `sys`) as a display-convenience choice, not a
+  hard spec requirement — flagged in each doc comment in case a later
+  task wants an "advanced/show system schemas" toggle.
+- **Column-metadata queries differ per engine**: Postgres has no
+  single-column primary-key flag, so `ListTables` joins
+  `information_schema.columns` against `table_constraints`/
+  `key_column_usage`; MySQL's `information_schema.columns.COLUMN_KEY =
+  'PRI'` gives this directly, no join needed.
+- **`Engine.Query` handles exactly one statement**, per `engine.go`'s
+  own doc comment. Multi-statement orchestration (spec.md §4.6: "runs
+  statements independently and reports per-statement success/failure")
+  is explicitly a caller-level concern (the query editor UI, tasks
+  3.6/4.6) — splitting/dispatching statements doesn't belong in the
+  Engine implementations themselves.
+- **Context cancellation was proven, not assumed**: both integration
+  tests ran a 30s server-side sleep (`pg_sleep(30)` /
+  `SELECT SLEEP(30)`) under a 1s-timeout context and confirmed the call
+  returned in ~1.0s, not near 30s — the query is genuinely aborted
+  server-side, not just abandoned client-side.
+- MySQL `[]byte` scan results are converted to `string` in
+  `QueryResult.Rows` for display-readiness, since go-sql-driver returns
+  most non-numeric types as raw bytes by default.
+- Test IDs 999010 (Postgres)/999011 (MySQL) — **the running convention
+  note keeps being right that it drifts**: this task found the highest
+  existing ID was 999009, one agent already having incorrectly assumed a
+  lower number from a stale doc mention. Always grep `9990\d\d` across
+  the whole repo before picking the next one; there is still no
+  automated guard.
+
+### `urlparse.go` (3.3)
+
+- `ParseConnectionString(raw string) (*ConnectionFields, error)`,
+  `ConnectionFields{Engine storage.Engine, Host, Port, Username,
+  Password, Database string, Params url.Values}` — reuses
+  `storage.Engine` rather than a parallel type.
+- Postgres/MySQL require a database segment; Mongo/Redis don't (matches
+  spec.md §3.3/§4.1's format documentation exactly).
+- **Redis rejects any username** in the userinfo section as a malformed-
+  input case (not silently ignored) — Redis auth is password-only.
+- **Port range is validated as 1-65535**, not just "must be numeric" —
+  `net/url` happily accepts an all-digit out-of-range port like `:99999`
+  since it only checks the characters are digits.
+- 12 distinct malformed-input cases are each individually tested with
+  their exact error string (empty string, missing scheme separator,
+  empty scheme, unsupported scheme, missing host, non-numeric port,
+  out-of-range port, trailing colon with no port digits, malformed
+  userinfo, username-on-redis, missing database for postgres/mysql,
+  multi-segment database path) — see `urlparse_test.go` for the exact
+  wording of each if a UI string needs to match one literally.
+- `net/url`'s own generic parse errors are pattern-matched and rewritten
+  into this module's "name the offending part" style rather than passed
+  through raw, falling back to a generic wrapped message only for truly
+  unanticipated `net/url` errors (e.g. malformed IPv6 brackets).
+
+### Column-metadata research (for tasks 3.7/4.8, read-only investigation)
+
+Sources checked directly (not recalled from training): `pgx/v5@v5.10.0`
+(`pgconn.FieldDescription`, `pgtype` package) and `go-sql-driver/mysql`
+(`fields.go`/`rows.go`) plus stdlib `database/sql`.
+
+- **pgx's `Rows.FieldDescriptions()`** exposes `TableOID` +
+  `TableAttributeNumber` — genuinely identifies the source table/column
+  for passthrough columns (`SELECT id FROM users`), but Postgres itself
+  sets `TableOID = 0` for computed/aggregate/JOIN-projected columns.
+  `DataTypeOID` is a raw OID requiring a `pgtype.Map` lookup (or a
+  `pg_type` query) to become a human-readable type name.
+- **MySQL's `sql.Rows.ColumnTypes()`** gives real
+  `DatabaseTypeName()`/`Nullable()`/`ScanType()`/`PrecisionScale()` (the
+  last only meaningful for `DECIMAL`), but `Length()` is **not
+  implemented** by go-sql-driver/mysql (dead code, always `ok=false`).
+  **Source-table-per-column is genuinely unavailable for MySQL at the
+  `database/sql` layer** — the driver parses a table name internally
+  (`mysqlField.tableName`) but never exposes it publicly. This is a real
+  gap in the driver, not a documentation oversight.
+- **Recommendation, not yet implemented**: `QueryResult.Columns []string`
+  should grow into `[]ResultColumn{Name, DatabaseType, Nullable *bool}`
+  before task 3.7 needs per-column type indicators in the results grid —
+  populated per-engine from `FieldDescriptions()`+`pgtype.Map` (Postgres)
+  or `ColumnTypes()` (MySQL). This is a **breaking change to
+  `engine.go`'s `QueryResult` struct that task 3.7 will need to make** —
+  flagging now so it isn't a surprise. `ListTables`'s
+  `information_schema` approach remains the right source for
+  autocomplete (4.8) — the two are complementary, not redundant; do not
+  try to resolve `TableOID` back to a table name for grid display, treat
+  it as absent for non-passthrough columns rather than a dependency.

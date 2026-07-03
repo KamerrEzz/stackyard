@@ -65,11 +65,11 @@ regardless of whether a task fully closes.
 
 ## Phase 3 — DB Client MVP (Postgres + MySQL)
 
-- [ ] **3.1** `internal/dbengine/engine.go`: define the `Engine` interface
+- [x] **3.1** `internal/dbengine/engine.go`: define the `Engine` interface
       (Connect, Ping, Query, ListSchemas, ListTables, Close).
-- [ ] **3.2** Implement the interface for Postgres (`pgx`) and MySQL
+- [x] **3.2** Implement the interface for Postgres (`pgx`) and MySQL
       (`go-sql-driver/mysql`).
-- [ ] **3.3** `urlparse.go`: parse the 4 connection-string formats into
+- [x] **3.3** `urlparse.go`: parse the 4 connection-string formats into
       form fields; unit-test malformed-string error messages.
 - [ ] **3.4** Connection form UI: paste-URL autofill + manual fields +
       "Test connection" button.
