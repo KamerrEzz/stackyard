@@ -77,7 +77,7 @@ regardless of whether a task fully closes.
       persist across restarts.
 - [x] **3.6** Integrate Monaco editor (`@monaco-editor/react`) with SQL
       syntax highlighting; wire "Run query" to `Engine.Query`.
-- [ ] **3.7** Read-only results grid rendering query output (types,
+- [x] **3.7** Read-only results grid rendering query output (types,
       pagination) for both engines.
 - [ ] **3.8** Multi-tab shell: open/close tabs, each bound to one
       connection + one editor + one result pane; verify independence

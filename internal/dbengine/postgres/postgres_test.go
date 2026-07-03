@@ -3,10 +3,12 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestNew_DoesNotDial(t *testing.T) {
@@ -51,6 +53,33 @@ func TestClose_BeforeConnect_IsSafe(t *testing.T) {
 	}
 	if err := e.Close(); err != nil {
 		t.Errorf("second Close() = %v, want nil", err)
+	}
+}
+
+func TestResolveTypeName_RegisteredOID_ReturnsPgtypeName(t *testing.T) {
+	cases := []struct {
+		name string
+		oid  uint32
+		want string
+	}{
+		{"int4", pgtype.Int4OID, "int4"},
+		{"text", pgtype.TextOID, "text"},
+		{"varchar", pgtype.VarcharOID, "varchar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveTypeName(tc.oid); got != tc.want {
+				t.Errorf("resolveTypeName(%d) = %q, want %q", tc.oid, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveTypeName_UnregisteredOID_FallsBackToOIDString(t *testing.T) {
+	const unregisteredOID uint32 = 999999
+	want := strconv.FormatUint(uint64(unregisteredOID), 10)
+	if got := resolveTypeName(unregisteredOID); got != want {
+		t.Errorf("resolveTypeName(%d) = %q, want fallback %q", unregisteredOID, got, want)
 	}
 }
 

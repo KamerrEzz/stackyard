@@ -9,11 +9,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"stackyard/internal/dbengine"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -74,7 +76,11 @@ func (e *Engine) Ping(ctx context.Context) error {
 // the mysql package). ctx governs the query's lifetime end to end:
 // cancelling it or letting it time out makes pgx send Postgres a real
 // cancel request that aborts the statement server-side, not just a
-// client-side give-up.
+// client-side give-up. Every returned ResultColumn.Nullable is always nil:
+// pgx's pgconn.FieldDescription carries no nullability bit, and resolving
+// it would require a separate per-column catalog query that conflates this
+// method's job with ListTables' — a deliberate, documented known
+// limitation, not an oversight.
 func (e *Engine) Query(ctx context.Context, query string) (*dbengine.QueryResult, error) {
 	if e.pool == nil {
 		return nil, ErrNotConnected
@@ -88,9 +94,12 @@ func (e *Engine) Query(ctx context.Context, query string) (*dbengine.QueryResult
 	defer rows.Close()
 
 	fieldDescriptions := rows.FieldDescriptions()
-	columns := make([]string, len(fieldDescriptions))
+	columns := make([]dbengine.ResultColumn, len(fieldDescriptions))
 	for i, fd := range fieldDescriptions {
-		columns[i] = fd.Name
+		columns[i] = dbengine.ResultColumn{
+			Name:         fd.Name,
+			DatabaseType: resolveTypeName(fd.DataTypeOID),
+		}
 	}
 
 	var resultRows [][]any
@@ -229,6 +238,20 @@ func (e *Engine) Close() error {
 		e.pool = nil
 	}
 	return nil
+}
+
+// resolveTypeName resolves oid to Postgres's human-readable type name (e.g.
+// "int4", "text", "varchar") using pgx's built-in OID registry. It is pure
+// and dependency-free — no live connection is needed — so it can be unit
+// tested directly against well-known OID constants. When oid is not a type
+// pgtype's Map recognizes (a real, expected case for custom types, enums,
+// and domains, not a bug path), it falls back to the OID's decimal string
+// form so callers always get a non-empty DatabaseType.
+func resolveTypeName(oid uint32) string {
+	if t, ok := pgtype.NewMap().TypeForOID(oid); ok {
+		return t.Name
+	}
+	return strconv.FormatUint(uint64(oid), 10)
 }
 
 // translatePgError wraps err with op for context, extracting Postgres's own

@@ -3,6 +3,7 @@ import {useCallback, useEffect, useRef, useState} from 'react'
 import '../../lib/monacoSetup'
 import {CancelQuery, CloseConnectionSession, OpenConnection, RunQuery} from '../../../wailsjs/go/main/App'
 import type {dbengine, main} from '../../../wailsjs/go/models'
+import ResultsGrid from './ResultsGrid'
 
 interface QueryEditorProps {
     fields: main.ConnectionFormFields
@@ -130,39 +131,7 @@ function QueryEditor({fields}: QueryEditorProps) {
                 {runState === 'error' && errorMessage && <span className="text-sm text-red-400">{errorMessage}</span>}
             </div>
 
-            {result && (
-                <div className="overflow-auto rounded border border-ink-800">
-                    <table className="w-full border-collapse text-left text-xs">
-                        <thead>
-                            <tr className="bg-ink-900">
-                                {result.Columns.map((column, index) => (
-                                    <th key={index} className="border-b border-ink-800 px-3 py-2 font-medium text-ink-300">
-                                        {column}
-                                    </th>
-                                ))}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {(result.Rows ?? []).map((row, rowIndex) => (
-                                <tr key={rowIndex} className="odd:bg-ink-950/40">
-                                    {row.map((cell, cellIndex) => (
-                                        <td key={cellIndex} className="border-b border-ink-900 px-3 py-1.5 font-mono text-ink-200">
-                                            {cell === null || cell === undefined ? (
-                                                <span className="italic text-ink-600">NULL</span>
-                                            ) : (
-                                                String(cell)
-                                            )}
-                                        </td>
-                                    ))}
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                    {(result.Rows ?? []).length === 0 && (
-                        <p className="p-3 text-xs text-ink-500">Query succeeded with no rows returned.</p>
-                    )}
-                </div>
-            )}
+            {result && <ResultsGrid result={result} />}
         </div>
     )
 }

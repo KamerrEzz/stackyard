@@ -86,7 +86,11 @@ func (e *Engine) Ping(ctx context.Context) error {
 // go-sql-driver/mysql watches ctx in a background goroutine and closes the
 // underlying connection the moment it's cancelled or times out, dropping
 // the in-flight query server-side rather than merely giving up on the
-// client side.
+// client side. Unlike Postgres, go-sql-driver/mysql genuinely implements
+// both DatabaseTypeName() and Nullable() on sql.ColumnType, so each
+// ResultColumn.Nullable is set to a real bool whenever the driver reports
+// ok from Nullable(); it is left nil only if the driver itself declines to
+// report nullability for that column.
 func (e *Engine) Query(ctx context.Context, query string) (*dbengine.QueryResult, error) {
 	if e.db == nil {
 		return nil, ErrNotConnected
@@ -112,10 +116,11 @@ func (e *Engine) Query(ctx context.Context, query string) (*dbengine.QueryResult
 	}
 	defer rows.Close()
 
-	columns, err := rows.Columns()
+	columnTypes, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, translateMySQLError("read columns", err)
 	}
+	columns := resultColumns(columnTypes)
 
 	var resultRows [][]any
 	for rows.Next() {
@@ -130,6 +135,27 @@ func (e *Engine) Query(ctx context.Context, query string) (*dbengine.QueryResult
 	}
 
 	return &dbengine.QueryResult{Columns: columns, Rows: resultRows, Duration: time.Since(start)}, nil
+}
+
+// resultColumns converts database/sql's *sql.ColumnType slice into
+// dbengine.ResultColumn, resolving each column's DatabaseType from
+// DatabaseTypeName() and its Nullable tri-state from Nullable(): the
+// driver's own ok return value distinguishes "genuinely not nullable/
+// nullable" from "this driver doesn't report nullability for this column",
+// so ResultColumn.Nullable is only set when ok is true.
+func resultColumns(columnTypes []*sql.ColumnType) []dbengine.ResultColumn {
+	columns := make([]dbengine.ResultColumn, len(columnTypes))
+	for i, ct := range columnTypes {
+		column := dbengine.ResultColumn{
+			Name:         ct.Name(),
+			DatabaseType: ct.DatabaseTypeName(),
+		}
+		if nullable, ok := ct.Nullable(); ok {
+			column.Nullable = &nullable
+		}
+		columns[i] = column
+	}
+	return columns
 }
 
 // scanRow scans one row into a []any, converting driver []byte values

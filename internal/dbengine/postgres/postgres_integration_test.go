@@ -129,13 +129,14 @@ func TestIntegration_PostgresEngine(t *testing.T) {
 	}
 	wantColumns := []string{"id", "name", "weight"}
 	if len(selectResult.Columns) != len(wantColumns) {
-		t.Fatalf("SELECT Columns = %v, want %v", selectResult.Columns, wantColumns)
+		t.Fatalf("SELECT Columns = %+v, want names %v", selectResult.Columns, wantColumns)
 	}
 	for i, want := range wantColumns {
-		if selectResult.Columns[i] != want {
-			t.Errorf("SELECT Columns[%d] = %q, want %q", i, selectResult.Columns[i], want)
+		if selectResult.Columns[i].Name != want {
+			t.Errorf("SELECT Columns[%d].Name = %q, want %q", i, selectResult.Columns[i].Name, want)
 		}
 	}
+	assertPostgresSelectResultColumns(t, selectResult.Columns)
 	if len(selectResult.Rows) != 2 {
 		t.Fatalf("SELECT returned %d rows, want 2", len(selectResult.Rows))
 	}
@@ -224,6 +225,37 @@ func findTable(tables []dbengine.TableInfo, name string) *dbengine.TableInfo {
 		}
 	}
 	return nil
+}
+
+// assertPostgresSelectResultColumns asserts the QueryResult-level metadata
+// (tasks.md 3.7) for the id/name/weight SELECT above: DatabaseType is a
+// non-empty, sane type name for the integer id column and the text name
+// column, and Nullable is nil for every column — documenting Postgres's
+// known limitation that pgx's FieldDescription never reports nullability
+// (see dbengine.ResultColumn's doc comment).
+func assertPostgresSelectResultColumns(t *testing.T, columns []dbengine.ResultColumn) {
+	t.Helper()
+	byName := make(map[string]dbengine.ResultColumn, len(columns))
+	for _, col := range columns {
+		byName[col.Name] = col
+		if col.Nullable != nil {
+			t.Errorf("SELECT ResultColumn %q.Nullable = %v, want nil (Postgres never reports nullability)", col.Name, *col.Nullable)
+		}
+	}
+
+	id, ok := byName["id"]
+	if !ok || id.DatabaseType == "" {
+		t.Errorf("SELECT ResultColumn %q.DatabaseType = %q, want a non-empty integer type name", "id", id.DatabaseType)
+	} else if id.DatabaseType != "int4" {
+		t.Errorf("SELECT ResultColumn %q.DatabaseType = %q, want %q", "id", id.DatabaseType, "int4")
+	}
+
+	name, ok := byName["name"]
+	if !ok || name.DatabaseType == "" {
+		t.Errorf("SELECT ResultColumn %q.DatabaseType = %q, want a non-empty text type name", "name", name.DatabaseType)
+	} else if name.DatabaseType != "text" {
+		t.Errorf("SELECT ResultColumn %q.DatabaseType = %q, want %q", "name", name.DatabaseType, "text")
+	}
 }
 
 func assertPostgresWidgetsColumns(t *testing.T, columns []dbengine.ColumnInfo) {

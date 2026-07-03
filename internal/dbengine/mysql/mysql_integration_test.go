@@ -130,13 +130,14 @@ func TestIntegration_MySQLEngine(t *testing.T) {
 	}
 	wantColumns := []string{"id", "name", "weight"}
 	if len(selectResult.Columns) != len(wantColumns) {
-		t.Fatalf("SELECT Columns = %v, want %v", selectResult.Columns, wantColumns)
+		t.Fatalf("SELECT Columns = %+v, want names %v", selectResult.Columns, wantColumns)
 	}
 	for i, want := range wantColumns {
-		if selectResult.Columns[i] != want {
-			t.Errorf("SELECT Columns[%d] = %q, want %q", i, selectResult.Columns[i], want)
+		if selectResult.Columns[i].Name != want {
+			t.Errorf("SELECT Columns[%d].Name = %q, want %q", i, selectResult.Columns[i].Name, want)
 		}
 	}
+	assertMySQLSelectResultColumns(t, selectResult.Columns)
 	if len(selectResult.Rows) != 2 {
 		t.Fatalf("SELECT returned %d rows, want 2", len(selectResult.Rows))
 	}
@@ -225,6 +226,45 @@ func findTable(tables []dbengine.TableInfo, name string) *dbengine.TableInfo {
 		}
 	}
 	return nil
+}
+
+// assertMySQLSelectResultColumns asserts the QueryResult-level metadata
+// (tasks.md 3.7) for the id/name/weight SELECT above: DatabaseType is a
+// non-empty, sane type name for the integer id column and the varchar name
+// column, and Nullable is a real bool matching each column's actual
+// nullability per the widgets DDL — id and name are NOT NULL (id via its
+// PRIMARY KEY, name via an explicit constraint), weight has no constraint
+// and is nullable.
+func assertMySQLSelectResultColumns(t *testing.T, columns []dbengine.ResultColumn) {
+	t.Helper()
+	byName := make(map[string]dbengine.ResultColumn, len(columns))
+	for _, col := range columns {
+		byName[col.Name] = col
+	}
+
+	id, ok := byName["id"]
+	if !ok || id.DatabaseType != "INT" {
+		t.Errorf("SELECT ResultColumn %q.DatabaseType = %q, want %q", "id", id.DatabaseType, "INT")
+	}
+	if id.Nullable == nil || *id.Nullable {
+		t.Errorf("SELECT ResultColumn %q.Nullable = %v, want a non-nil false (id is the PRIMARY KEY)", "id", id.Nullable)
+	}
+
+	name, ok := byName["name"]
+	if !ok || name.DatabaseType != "VARCHAR" {
+		t.Errorf("SELECT ResultColumn %q.DatabaseType = %q, want %q", "name", name.DatabaseType, "VARCHAR")
+	}
+	if name.Nullable == nil || *name.Nullable {
+		t.Errorf("SELECT ResultColumn %q.Nullable = %v, want a non-nil false (name is NOT NULL)", "name", name.Nullable)
+	}
+
+	weight, ok := byName["weight"]
+	if !ok || weight.DatabaseType != "INT" {
+		t.Errorf("SELECT ResultColumn %q.DatabaseType = %q, want %q", "weight", weight.DatabaseType, "INT")
+	}
+	if weight.Nullable == nil || !*weight.Nullable {
+		t.Errorf("SELECT ResultColumn %q.Nullable = %v, want a non-nil true (weight has no NOT NULL constraint)", "weight", weight.Nullable)
+	}
 }
 
 func assertMySQLWidgetsColumns(t *testing.T, columns []dbengine.ColumnInfo) {

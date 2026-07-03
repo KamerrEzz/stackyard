@@ -1114,3 +1114,50 @@ Sources checked directly (not recalled from training): `pgx/v5@v5.10.0`
 - Postgres/MySQL both map to Monaco's built-in `sql` language mode (no
   separate per-dialect SQL modes exist in Monaco out of the box); other
   engines map to `plaintext` until Phases 5/6.
+
+### Results grid with types and pagination (3.7) — breaking `QueryResult` change
+
+- **`QueryResult.Columns` is now `[]ResultColumn{Name, DatabaseType,
+  Nullable *bool}`**, not `[]string`. Postgres resolves `DatabaseType`
+  from `pgx`'s `FieldDescriptions()` OID via `pgtype.NewMap()`, falling
+  back to the raw OID as a string for unregistered/custom types;
+  `Nullable` is always `nil` for Postgres (pgx exposes no nullability
+  bit — querying `pg_attribute` to backfill it was judged out of scope,
+  it would conflate this method's job with `ListTables`'s). MySQL uses
+  `sql.Rows.ColumnTypes()`'s real `DatabaseTypeName()`/`Nullable()`
+  directly. This ripples through `engine.go`, both engine
+  implementations and their tests, `frontend/wailsjs/go/models.ts` — the
+  ripple was independently re-verified (grepped `.Columns\b` repo-wide)
+  by a fresh-context adversarial reviewer chained within the same task,
+  not just trusted from the implementer's own report.
+- **Pagination is client-side** (100 rows/page, Prev/Next, "Showing X-Y
+  of Z rows") — deliberate scope decision, not an oversight:
+  `Engine.Query` has no server-side/cursor pagination anywhere in this
+  codebase, one execution returns every row. Server-side pagination for
+  very large result sets is explicit future work, not this task's job.
+- **NULL is visually distinct from empty string**: `null`/`undefined`
+  render as an italicized "NULL" label; a genuine empty string renders
+  as empty text, never conflated. This incidentally hardened a latent
+  crash risk too — non-SELECT statements return nil `Columns`/`Rows`
+  (JSON `null`), which the old inline table in `QueryEditor.tsx` didn't
+  guard against; `ResultsGrid` defaults both to `[]`.
+- **First Vitest suite in this project** (`vitest@0.34.6`, pinned for
+  `vite@^3` compatibility) — 10 tests on the pure `resultsGridHelpers.ts`
+  logic (`paginateRows`, `describeCell`), no testing-library/jsdom.
+- **Known gap, not fixed**: `tsconfig.json` now excludes `*.test.ts(x)`
+  from the production `tsc` build (a transitive `@types/node@26` pulled
+  in by vitest uses syntax this project's pinned `typescript@4.6.4`
+  can't parse) — but `vitest run` executes test files via esbuild, which
+  doesn't type-check. **A type error inside a test file currently goes
+  undetected by both `tsc` and `vitest`.** Worth revisiting if the
+  TypeScript version is ever upgraded.
+- **Manually verified after the fact** (the delegated task's own
+  automated matrix was green, but the live click-through was flagged as
+  skipped, so it was done as a follow-up): seeded 150 Postgres rows
+  (every 3rd with a NULL `note`) via a throwaway `cmd/manualverify37`
+  program, drove the real running app with Playwright — pasted the
+  connection string, ran `SELECT * FROM widgets ORDER BY id`, confirmed
+  "150 row(s) returned in 102.5ms," page 1 showed rows 1-100, clicked
+  Next, confirmed "Showing 101-150 of 150 rows" with NULL cells rendered
+  in muted italics distinct from `note-N` text. All Docker resources and
+  the throwaway `cmd/` programs were removed afterward.

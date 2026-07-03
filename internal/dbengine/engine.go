@@ -43,10 +43,30 @@ type Engine interface {
 // QueryResult is the engine-agnostic shape of a single executed
 // statement's outcome.
 type QueryResult struct {
-	Columns      []string
+	Columns      []ResultColumn
 	Rows         [][]any
 	RowsAffected int64
 	Duration     time.Duration
+}
+
+// ResultColumn describes one column of a QueryResult (tasks.md 3.7),
+// distinct from ColumnInfo below: ColumnInfo describes a table's column as
+// reported by ListTables (schema metadata, including primary-key
+// membership), while ResultColumn describes a column as reported by the
+// driver for one executed statement's result set.
+//
+// Nullable is a tri-state: nil means the engine/driver does not report
+// nullability for this column at all (this is always the case for
+// Postgres — pgx's pgconn.FieldDescription carries no nullability bit, and
+// resolving it would require a separate catalog query per column that
+// conflates this method's job with ListTables', so it is deliberately left
+// unknown rather than guessed); a non-nil pointer means the driver did
+// report it (MySQL's database/sql ColumnType.Nullable, when its second
+// return value is true).
+type ResultColumn struct {
+	Name         string
+	DatabaseType string
+	Nullable     *bool
 }
 
 // ColumnInfo describes one column of a table.

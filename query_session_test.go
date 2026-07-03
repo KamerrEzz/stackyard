@@ -30,7 +30,7 @@ func (f *fakeQueryEngine) Query(ctx context.Context, query string) (*dbengine.Qu
 	if f.queryFunc != nil {
 		return f.queryFunc(ctx, query)
 	}
-	return &dbengine.QueryResult{Columns: []string{"col"}, Rows: [][]any{{query}}}, nil
+	return &dbengine.QueryResult{Columns: []dbengine.ResultColumn{{Name: "col"}}, Rows: [][]any{{query}}}, nil
 }
 
 func (f *fakeQueryEngine) ListSchemas(ctx context.Context) ([]string, error) { return nil, nil }
@@ -89,7 +89,7 @@ func TestApp_RunQuery_CallsEngineQueryAndClearsCancelAfterwards(t *testing.T) {
 	engine := &fakeQueryEngine{
 		queryFunc: func(ctx context.Context, query string) (*dbengine.QueryResult, error) {
 			gotQuery = query
-			return &dbengine.QueryResult{Columns: []string{"n"}, Rows: [][]any{{1}}}, nil
+			return &dbengine.QueryResult{Columns: []dbengine.ResultColumn{{Name: "n"}}, Rows: [][]any{{1}}}, nil
 		},
 	}
 	a.putQuerySession("session-1", &querySession{engine: engine})
