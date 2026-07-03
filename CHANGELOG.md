@@ -455,10 +455,25 @@ MySQL.
   (consistent with this app's existing no-live-polling design elsewhere,
   not itself a bug).
 
-Task 9.3 (Windows installer build via Wails' NSIS packaging) remains
-**blocked**, not silently skipped: NSIS is not installed on this machine,
-and its installer requires interactive administrator elevation (a UAC
-consent prompt) that this session cannot approve. A non-interactive
+- **Windows installer (task 9.3)**: NSIS installed by the user (an
+  elevated terminal was required for `winget install --id NSIS.NSIS -e`,
+  which this session couldn't approve non-interactively on its own —
+  see the "blocked" account below, now resolved). `wails build -nsis`
+  produced `build/bin/stackyard-amd64-installer.exe` (~16.6 MiB). The
+  installer itself also requests admin elevation by default
+  (per-machine install into `Program Files`), so the user ran it
+  directly rather than the agent attempting to bypass that boundary
+  too. Verified afterward: the installed directory
+  (`C:\Program Files\Kamerr Ezz\Stackyard\`) contains only
+  `stackyard.exe` (byte-identical to the dev-built binary) and
+  `uninstall.exe` — no dev-only path dependency of any kind, confirming
+  the frontend is fully embedded via `go:embed`. Launched the installed
+  executable directly and confirmed it starts and runs correctly.
+
+Task 9.3's original blocker (kept here for the historical record — now
+resolved above): NSIS was not installed on this machine, and its
+installer requires interactive administrator elevation (a UAC consent
+prompt) that this session couldn't approve on its own. A non-interactive
 `winget install --id NSIS.NSIS -e` was attempted, verified safe (official
 package, checksum-verified installer), and stalled at the elevation
 prompt — the hung process was killed and confirmed to have left zero
@@ -466,12 +481,7 @@ partial/half-installed state behind. `wails.json` was prepared with an
 `info` block (company/product name, version, copyright) so the NSIS
 template has real values once a build is possible, keeping
 `productVersion` at `"0.0.0"` pending this project's still-unresolved
-real versioning decision. To unblock: from an **elevated**
-("Run as Administrator") terminal, run
-`winget install --id NSIS.NSIS -e --silent --accept-package-agreements --accept-source-agreements`
-(approving the UAC prompt when it appears), then build the installer with
-`wails build -nsis` — expected output
-`build/bin/stackyard-amd64-installer.exe`.
+real versioning decision.
 
 ### Fixed
 

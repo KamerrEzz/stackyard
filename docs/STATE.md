@@ -2359,6 +2359,31 @@ Once 9.3 closes, `v1.0.0` becomes due under the same mapping already
 established for every prior phase (end of Phase 9 → `v1.0.0`, since
 Phase 9 is this project's final roadmap phase per `plan.md` §6).
 
+**Update, Session 21 (2026-07-03) — Phase 9 (task 9.3) closed, `v1.0.0`
+now due:** the user installed NSIS and ran `wails build -nsis`
+successfully; the installer was smoke-tested for real (installed by the
+user to `C:\Program Files\Kamerr Ezz\Stackyard\`, launched from that
+path, confirmed byte-identical to the dev-built binary with zero
+dev-only path dependencies). Full detail in "Session 21" above. Phase 9
+is now fully closed — every phase in `plan.md`'s roadmap is complete.
+
+```
+git tag -a v0.1.0 -m "Phase 1: Environment Manager MVP (Postgres-only start/stop/restart, connection string copy)" e743c6b
+git tag -a v0.2.0 -m "Phase 2: Environment Manager, full (MySQL/MongoDB/Redis orchestration, multi-engine wizard, profile duplicate/rename/delete, reset volume, live status/stats dashboard) - completes Module 1" 92ff4bc
+git tag -a v0.3.0 -m "Phase 3: DB Client MVP for Postgres+MySQL (Engine interface, connection-string parser, connection form, saved connections, Monaco editor with cancellable queries, typed results grid, multi-tab shell)" c89a91a
+git tag -a v0.4.0 -m "Phase 4 + 4.5: Relational DB Client, complete (editable grid, multi-statement execution engine at the Go layer, query history, snippets CRUD + Run snippet, Monaco autocomplete) and Schema Diagram for Postgres/MySQL (FK introspection, Mermaid erDiagram generation, zoom/pan, PNG/SVG export) - completes Module 2's relational feature set" 749f127
+git tag -a v0.5.0 -m "Phase 5: MongoDB support (document-oriented Engine via mongo-go-driver, unified multi-tab shell shared with SQL connections, document tree/JSON viewer with in-place editing/create/delete, collection browser with filter bar, inferred-structure Schema Diagram) - completes Module 2's DB Client feature set for every engine except Redis" 2b568ff
+git tag -a v0.6.0 -m "Phase 6: Redis support (key-value Engine via go-redis/v9, all 5 data types, cursor-based SCAN, TTL display/edit/persist, key rename/delete) - completes Module 2, DB Client, in full for all 4 engines" 0d0197f
+git tag -a v0.7.0 -m "Phase 7: Import/Export (CSV/JSON/SQL-dump export for full-table and current-query-result scope, CSV/JSON import with pre-commit validation and atomic bulk-insert), verified via real round-trip tests against fresh Postgres and MySQL instances" 225c80f
+git tag -a v0.8.0 -m "Phase 8: Migrations for Postgres+MySQL (create-migration scaffolding, schema_migrations tracking table, atomic Apply/Rollback via a new optional dbengine.Transactor interface, Migrations UI panel with folder-picker and pending/applied status), manually verified end-to-end including direct database-level checks" e056136
+git tag -a v1.0.0 -m "Phase 9: Polish & Ship v1 (performance measured against the NFR bar, cross-module visual polish including a real missing-Tailwind-color-shade fix, Windows NSIS installer built and smoke-tested, a personally-driven dogfood run proving spec.md §7's full success-definition flow end-to-end) - completes every phase in the v1 roadmap" 7d52bbb
+```
+
+None of these nine tags have been executed — `git tag -l` remains empty.
+All are for the user to run manually, in whatever order/timing they
+prefer, each pointing at the exact commit where that phase actually
+closed.
+
 `v0.1.0` through `v0.8.0` remain exactly as proposed in the notes
 above — **still not executed by the user, and still not superseded or
 changed by this update.** No new tag is invented for this partial-phase
