@@ -13,7 +13,7 @@
   "info": {
     "companyName": "Kamerr Ezz",
     "productName": "Stackyard",
-    "productVersion": "0.0.0",
+    "productVersion": "1.0.0",
     "copyright": "Copyright © 2026 Kamerr Ezz",
     "comments": "Local database environment manager and multi-engine DB client"
   }

@@ -5224,3 +5224,107 @@ present column accidentally prevented the exact empty-payload case from
 ever being exercised. Re-verifying live against a table shaped
 precisely like the original bug report (not just "any table with a
 DEFAULT column") is what surfaced this.
+
+## Session 26 — Public repo content: README, VitePress docs site, license wiring
+
+Per Session 24's deferred scope (public GitHub repo, README, VitePress
+docs site, About/AI-collaboration disclosure, AI-contributor-friendly
+context) and the user's explicit sequencing ("once Phase 11 is confirmed
+correct, do the docs/release work"): this session covers only the
+written content and docs tooling. The actual `gh` repo creation, push,
+and release are a separate, undocumented-in-`tasks.md` step handled by
+the orchestrator directly, not this session.
+
+### What was built
+
+- **`README.md`** — replaced the Wails scaffold placeholder with a real
+  README: tagline, two embedded screenshots (`data-grid.png`,
+  `schema-diagram.png` — chosen as the most illustrative of the editable
+  grid and the live ER diagram), a full feature list compiled from
+  `spec.md` §3/§4 and confirmed against `tasks.md`'s Phase 1-11 checklist
+  (Environment Manager, DB Client, Schema Diagram, Import/Export,
+  Migrations — including the v1.1/v1.2 additions: create-table UI,
+  template gallery, Prisma/Drizzle schema export, the 3-panel layout and
+  spreadsheet-style grid), a Getting Started section, and a License
+  section linking to `LICENSE`.
+- **`docs-site/`** — a new VitePress 1.6.4 site, entirely separate from
+  `docs/STATE.md` (this internal dev log). Structure: `index.md` (home,
+  VitePress `layout: home` hero + features grid), `getting-started.md`,
+  `features/{environment-manager,db-client,schema-diagram,import-export,
+  migrations}.md` (one page per module, each with the relevant
+  screenshot(s) embedded via root-relative `/screenshots/*.png` paths,
+  copied into `docs-site/public/screenshots/` from the project's
+  `assets/screenshots/`), `about.md` (project description, license
+  summary, and the AI/human collaboration disclosure — see below), and
+  `contributing-with-ai.md` (points future AI-assisted contributors at
+  `CLAUDE.md` → `spec.md`/`plan.md` → `tasks.md` → `docs/STATE.md`, in
+  that order, with a one-line summary of what each contains).
+- **`docs-site/package.json`** — a dedicated, self-contained package
+  (own `pnpm-lock.yaml`, own `pnpm-workspace.yaml` for the
+  `esbuild` build-script allowlist pnpm 11 requires) with
+  `docs:dev`/`docs:build`/`docs:preview` scripts. Deliberately NOT
+  merged into a root `package.json` or `frontend/package.json` — the
+  existing Wails frontend build is untouched.
+- **`.gitignore`** — added `docs-site/.vitepress/dist` and
+  `docs-site/.vitepress/cache` (`node_modules` was already covered by
+  the existing blanket `node_modules` ignore rule).
+
+### The AI-collaboration disclosure (`about.md`)
+
+Per this user's own global `CLAUDE.md` rule and Session 24's explicit,
+narrowly-scoped exception to it: `about.md` states the project was built
+through roughly equal collaboration between the human developer
+(architecture/product direction) and Claude/Anthropic (implementation,
+testing, verification) — factual tone, not "made by AI," not
+diminishing either side. This exact wording lives ONLY on that one docs
+page. Nothing else — the README, code comments, this file, commit
+messages — carries any AI mention; that standing rule is unchanged.
+
+### Verification performed (not just assumed)
+
+- `cd docs-site && pnpm install` — resolved cleanly. Needed one fixup:
+  pnpm 11 ignores build scripts by default (`esbuild`'s postinstall,
+  needed for its native binary) unless explicitly allowlisted; added
+  `docs-site/pnpm-workspace.yaml` with `allowBuilds: { esbuild: true }`
+  and re-ran install — resolved without the warning.
+- `pnpm run docs:build` — real VitePress build, completed in ~4.5s,
+  produced actual HTML/JS/CSS output under
+  `docs-site/.vitepress/dist/` (confirmed via `find`, not just "the
+  command exited 0").
+- `pnpm run docs:preview` (backgrounded, port 4173) + `curl` against
+  `/`, `/about.html`, `/features/db-client.html`, and
+  `/screenshots/data-grid.png` — all returned HTTP 200. No browser
+  tool was available in this session, so this curl-based check plus a
+  `grep` of the built HTML for expected `<title>` tags, the
+  `/screenshots/*.png` references inside each feature page, and the
+  literal disclosure text ("Claude (Anthropic)", "Roughly equal
+  effort") in `about.html` stood in for a visual load — confirmed all
+  present. Preview server process killed afterward (`taskkill` by PID
+  after `netstat` located the listener).
+- `go build ./...` from the repo root — passes silently, confirming
+  none of the new frontend/docs tooling affected the Go backend.
+- `pnpm run build` inside `frontend/` — still produces its existing
+  (large, pre-existing chunk-size warning included) production bundle
+  unaffected.
+
+### Judgment calls
+
+- Picked `data-grid.png` + `schema-diagram.png` as the two README
+  screenshots (over `environments.png`/`query-editor.png`/
+  `db-client-onboarding.png`) as the most self-explanatory at a glance
+  for someone skimming a GitHub repo page for the first time; all five
+  are used across the docs site's feature pages.
+- `docs-site/package.json` lives as its own package rather than a root
+  `package.json`, to avoid any ambiguity with Wails' `frontend:install`/
+  `frontend:build` hooks (which target `frontend/` specifically) even
+  though those hooks would not actually have picked up a root
+  `package.json` — the separation still seemed like the cleaner,
+  lower-risk call for a docs-only concern.
+- No live deployment URL exists yet (e.g. GitHub Pages) — the README
+  and docs site link to `docs-site/` as a local path/build target, not
+  a hosted URL, since deployment wasn't part of this session's scope
+  and no URL has been confirmed with the user.
+- `tasks.md` was intentionally left untouched — this work isn't one of
+  its numbered phases (per the user's own instruction), so no new
+  checklist entry was added there; this session's record lives here
+  instead.

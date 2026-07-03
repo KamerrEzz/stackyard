@@ -4,3 +4,5 @@ node_modules
 frontend/dist
 frontend/package.json.md5
 .claude/scheduled_tasks.lock
+docs-site/.vitepress/dist
+docs-site/.vitepress/cache
