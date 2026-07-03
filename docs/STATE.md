@@ -4205,3 +4205,108 @@ conversion, just two different output languages) but independent of
 10.1-10.3 — bundled together the same way CSV/JSON/SQL-dump export was
 bundled in Phase 7, for the same reason. All four work streams
 dispatched in parallel.
+
+## Session 23 — Phase 10 closes 10.4/10.5: Prisma/Drizzle schema export
+
+New package `internal/schemaexport` renders `dbengine.TableInfo`/
+`ForeignKey` (the same introspection `ListTables`/`ListForeignKeys`
+already provide the schema-diagram feature) directly into two ORM
+schema targets — no intermediate normalized IR was introduced, since
+with only two targets a shared IR would have added a translation layer
+without saving real duplication; each target (`prisma.go`, `drizzle.go`)
+still shares `typemap.go`'s dialect→scalar/builder tables and
+`identifiers.go`'s camelCase helper, so nothing is duplicated that
+didn't need its own per-target shape anyway.
+
+**Type mapping**: `postgresToPrismaScalar`/`mysqlToPrismaScalar` and
+`postgresToDrizzleBuilder`/`mysqlToDrizzleBuilder` in
+`internal/schemaexport/typemap.go` are the authoritative tables;
+everything unrecognized falls back to Prisma's `String` / Drizzle's
+`text`. Documented lossy judgment calls: MySQL's `tinyint`-as-boolean
+convention is not detected (DATA_TYPE reports "tinyint" for both,
+COLUMN_TYPE's display-width lookup is out of scope — no new DB
+queries); Postgres array columns (`data_type = "ARRAY"`) fall through
+to the generic fallback since the element type needs a separate
+catalog lookup; MySQL varchar/char always render with Drizzle's fixed
+255-length default (real length also needs COLUMN_TYPE); `bigint`
+defaults to Drizzle's `{ mode: "number" }` over `{ mode: "bigint" }`
+(precision loss above `Number.MAX_SAFE_INTEGER`, documented); no
+column ever gets Postgres's `serial` (no autoincrement signal in
+`ColumnInfo`) — a verbose-but-correct choice, not a lossy one. Column
+defaults are never emitted at all in either target: `ColumnInfo` has
+no default-value field to translate.
+
+**FK/relation scope**: implemented for both targets using the existing
+`ListForeignKeys`. Drizzle attaches `.references(() => table.column)`
+directly on the FK column (no back-relation bookkeeping needed —
+Drizzle resolves the reference lazily via its own arrow function).
+Prisma needs a full relation field plus a back-relation array field on
+the referenced model; field names are derived by stripping a column's
+trailing `_id` (collision-guarded against existing columns and
+sibling relations on the same table). Composite (multi-column)
+foreign keys are deliberately NOT detected or merged into one
+multi-field relation — every `ForeignKey` row still gets its own
+independent relation, exactly matching `internal/diagram/relational.go`'s
+existing precedent (that Mermaid generator has the identical
+limitation, documented in its own doc comment) rather than inventing
+new detection logic that could misfire on two genuinely independent
+single-column FKs to the same table.
+
+**Wails bound methods** (`schemaexport.go`, root `package main`):
+`ExportSchemaAsPrisma(sessionID, schema string) (string, error)` and
+`ExportSchemaAsDrizzle(sessionID, schema string) (string, error)` —
+both exactly 2 return values per the Wails v2.12.0 IPC constraint
+(Session 10/11's `boundMethod.go` bug). Both reuse `gridSession` (for
+dialect) and `saveExportFile` (export.go's existing native-save-dialog
+helper) — no new save-dialog code.
+
+**Frontend**: a per-schema "Export schema: Prisma / Drizzle" action
+pair added to `QueryEditor.tsx`'s existing Tables panel (one header row
+per schema, above that schema's table rows) — chosen over
+`SchemaDiagramView.tsx` because `QueryEditor` is the DB Client's actual
+live working session against "an existing connection," while
+`SchemaDiagramView` is a separate, dedicated visualization-only
+connection form; `QueryEditor` also already had the session ID, schema
+list, and dialect available at zero extra cost.
+
+**Testing**: strict TDD — RED (undefined symbol) confirmed before each
+GREEN. Go: exact-string unit tests in `internal/schemaexport` covering
+a simple table with a single PK, both dialects' full type-mapping
+sweep, a composite PK, and an FK between two tables (all first-try
+GREEN except one test's `want` string, itself missing the header
+boilerplate — fixed in the test, not the generator). A
+`//go:build integration` test (`schemaexport_integration_test.go`, IDs
+999033/999034, ports 15546/13324) spins up real Postgres and MySQL
+containers with an actual FK constraint, feeding real
+`ListTables`/`ListForeignKeys` output into both generators — this
+doubles as this task's manual-verification substitute (no Playwright
+setup exists in this repo to drive a `wails dev` UI check) and
+confirmed every real-DB-reported type string matches this session's
+assumed map keys on the first run. Frontend: `schemaExportSyntax.test.ts`
+parses hardcoded Drizzle fixtures (matching the Go FK/composite-PK
+tests' own expected strings) via the `typescript` package's
+`ts.createSourceFile`/`parseDiagnostics` — proving generated Drizzle
+output is syntactically valid TS using a dependency already in
+`package.json`, no new tooling added. Prisma has no equivalently
+lightweight syntax-only validator reachable without its own toolchain,
+so `schema.prisma` output stays exact-string tested in Go only, per
+this task's own documented fallback allowance.
+
+Noted in passing, not fixed (owned by other in-flight Phase 10 work):
+`createtable_integration_test.go` and
+`internal/snippettemplates/templates_integration_test.go` both
+independently picked test/profile/service IDs 999031/999032 — a
+collision between two parallel work streams neither could see from the
+other. This session's own new integration test picked 999033/999034,
+the next genuinely free IDs as of this session.
+
+Verified green: `go build ./...`, `go vet ./...`, `gofmt -l .` (clean),
+`go test ./...`, this session's two new
+`go test -tags=integration -run TestIntegration_SchemaExport ./...`
+cases (full integration suite not re-run repo-wide this session — a
+concurrently active Docker container from another in-flight Phase 10
+work stream was observed via `docker ps`, and re-running every other
+integration test file's container/ID allocations risked cross-task
+interference in this shared environment, not a gap in this task's own
+verification), `pnpm run build`, `pnpm run test` (244 tests, including
+4 new).

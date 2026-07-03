@@ -186,18 +186,18 @@ real dogfooding/user feedback once v1 shipped. Each is independently
 scoped and can land as its own increment; see `docs/STATE.md`'s Phase
 10 sections for the exact clarified scope behind each.
 
-- [ ] **10.1** Environments: custom username/password fields on the
+- [x] **10.1** Environments: custom username/password fields on the
       "Create profile" form (Postgres/MySQL/MongoDB), set once at
       creation time, fixed afterward — no live credential rotation on an
       already-running container.
-- [ ] **10.2** DB Client: "Create table" UI (name + columns with type/
+- [x] **10.2** DB Client: "Create table" UI (name + columns with type/
       nullable/primary-key/default) generating and running a real
       `CREATE TABLE`, for Postgres/MySQL.
-- [ ] **10.3** DB Client: a gallery of pre-built SQL snippet templates
+- [x] **10.3** DB Client: a gallery of pre-built SQL snippet templates
       (e.g. "Auth: users + sessions + tokens") insertable with one
       click, Postgres/MySQL.
-- [ ] **10.4** DB Client: export an existing connection's schema as a
+- [x] **10.4** DB Client: export an existing connection's schema as a
       real `schema.prisma` file, using the existing `ListTables`
       introspection.
-- [ ] **10.5** DB Client: export an existing connection's schema as a
+- [x] **10.5** DB Client: export an existing connection's schema as a
       real Drizzle `schema.ts` file, same introspection as 10.4.

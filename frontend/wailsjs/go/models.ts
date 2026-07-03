@@ -1,5 +1,25 @@
 export namespace dbengine {
 	
+	export class ColumnDefinition {
+	    Name: string;
+	    Type: string;
+	    Nullable: boolean;
+	    IsPrimaryKey: boolean;
+	    Default?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ColumnDefinition(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Name = source["Name"];
+	        this.Type = source["Type"];
+	        this.Nullable = source["Nullable"];
+	        this.IsPrimaryKey = source["IsPrimaryKey"];
+	        this.Default = source["Default"];
+	    }
+	}
 	export class ColumnInfo {
 	    Name: string;
 	    DataType: string;
@@ -354,6 +374,9 @@ export namespace main {
 	export class ServiceRequest {
 	    Engine: string;
 	    HostPort: number;
+	    Username: string;
+	    Password: string;
+	    DBName: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ServiceRequest(source);
@@ -363,6 +386,9 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Engine = source["Engine"];
 	        this.HostPort = source["HostPort"];
+	        this.Username = source["Username"];
+	        this.Password = source["Password"];
+	        this.DBName = source["DBName"];
 	    }
 	}
 	export class SnippetFilter {
@@ -455,6 +481,29 @@ export namespace redis {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Member = source["Member"];
 	        this.Score = source["Score"];
+	    }
+	}
+
+}
+
+export namespace snippettemplates {
+	
+	export class Template {
+	    ID: string;
+	    Name: string;
+	    Description: string;
+	    SQL: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new Template(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ID = source["ID"];
+	        this.Name = source["Name"];
+	        this.Description = source["Description"];
+	        this.SQL = source["SQL"];
 	    }
 	}
 

@@ -70,6 +70,10 @@ export function CreateSnippet(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['CreateSnippet'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function CreateTable(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['CreateTable'](arg1, arg2, arg3, arg4);
+}
+
 export function DeleteConnection(arg1) {
   return window['go']['main']['App']['DeleteConnection'](arg1);
 }
@@ -112,6 +116,14 @@ export function ExportQueryResultAsCSV(arg1, arg2) {
 
 export function ExportQueryResultAsJSON(arg1, arg2) {
   return window['go']['main']['App']['ExportQueryResultAsJSON'](arg1, arg2);
+}
+
+export function ExportSchemaAsDrizzle(arg1, arg2) {
+  return window['go']['main']['App']['ExportSchemaAsDrizzle'](arg1, arg2);
+}
+
+export function ExportSchemaAsPrisma(arg1, arg2) {
+  return window['go']['main']['App']['ExportSchemaAsPrisma'](arg1, arg2);
 }
 
 export function ExportTableAsCSV(arg1, arg2, arg3) {
@@ -212,6 +224,10 @@ export function ListQueryHistory(arg1) {
 
 export function ListSchemasForSession(arg1) {
   return window['go']['main']['App']['ListSchemasForSession'](arg1);
+}
+
+export function ListSnippetTemplates() {
+  return window['go']['main']['App']['ListSnippetTemplates']();
 }
 
 export function ListSnippets(arg1) {

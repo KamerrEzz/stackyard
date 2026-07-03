@@ -467,6 +467,143 @@ func TestApp_CreateProfile_RequiresDB(t *testing.T) {
 	}
 }
 
+func TestApp_CreateProfile_UsesCustomCredentialsWhenProvided(t *testing.T) {
+	a := newTestApp(t)
+
+	summary, err := a.CreateProfile("custom-creds", []ServiceRequest{
+		{Engine: storage.EnginePostgres, Username: "sylvain", Password: "s3cret", DBName: "sylvain_db"},
+	})
+	if err != nil {
+		t.Fatalf("CreateProfile failed: %v", err)
+	}
+
+	svc := summary.Services[0]
+	if got := stringOrEmpty(svc.Username); got != "sylvain" {
+		t.Errorf("Username = %q, want %q", got, "sylvain")
+	}
+	if got := stringOrEmpty(svc.PasswordEncrypted); got != "s3cret" {
+		t.Errorf("PasswordEncrypted = %q, want %q", got, "s3cret")
+	}
+	if got := stringOrEmpty(svc.DBName); got != "sylvain_db" {
+		t.Errorf("DBName = %q, want %q", got, "sylvain_db")
+	}
+}
+
+func TestApp_CreateProfile_FallsBackToEngineDefaultsWhenCredentialsOmitted(t *testing.T) {
+	a := newTestApp(t)
+
+	summary, err := a.CreateProfile("default-creds", []ServiceRequest{{Engine: storage.EnginePostgres}})
+	if err != nil {
+		t.Fatalf("CreateProfile failed: %v", err)
+	}
+
+	defaults, err := defaultsForEngine(storage.EnginePostgres)
+	if err != nil {
+		t.Fatalf("defaultsForEngine failed: %v", err)
+	}
+
+	svc := summary.Services[0]
+	if got := stringOrEmpty(svc.Username); got != stringOrEmpty(defaults.username) {
+		t.Errorf("Username = %q, want the built-in default %q", got, stringOrEmpty(defaults.username))
+	}
+	if got := stringOrEmpty(svc.PasswordEncrypted); got != stringOrEmpty(defaults.password) {
+		t.Errorf("PasswordEncrypted = %q, want the built-in default %q", got, stringOrEmpty(defaults.password))
+	}
+	if got := stringOrEmpty(svc.DBName); got != stringOrEmpty(defaults.dbName) {
+		t.Errorf("DBName = %q, want the built-in default %q", got, stringOrEmpty(defaults.dbName))
+	}
+}
+
+func TestApp_CreateProfile_PartialCredentialsFallBackOnlyForOmittedFields(t *testing.T) {
+	a := newTestApp(t)
+
+	summary, err := a.CreateProfile("partial-creds", []ServiceRequest{
+		{Engine: storage.EngineMySQL, Username: "custom-user"},
+	})
+	if err != nil {
+		t.Fatalf("CreateProfile failed: %v", err)
+	}
+
+	defaults, err := defaultsForEngine(storage.EngineMySQL)
+	if err != nil {
+		t.Fatalf("defaultsForEngine failed: %v", err)
+	}
+
+	svc := summary.Services[0]
+	if got := stringOrEmpty(svc.Username); got != "custom-user" {
+		t.Errorf("Username = %q, want the requested %q", got, "custom-user")
+	}
+	if got := stringOrEmpty(svc.PasswordEncrypted); got != stringOrEmpty(defaults.password) {
+		t.Errorf("PasswordEncrypted = %q, want the built-in default %q", got, stringOrEmpty(defaults.password))
+	}
+	if got := stringOrEmpty(svc.DBName); got != stringOrEmpty(defaults.dbName) {
+		t.Errorf("DBName = %q, want the built-in default %q", got, stringOrEmpty(defaults.dbName))
+	}
+}
+
+func TestApp_CreateProfile_RedisRejectsRequestedUsername(t *testing.T) {
+	a := newTestApp(t)
+
+	if _, err := a.CreateProfile("redis-username", []ServiceRequest{
+		{Engine: storage.EngineRedis, Username: "someuser"},
+	}); err == nil {
+		t.Error("CreateProfile() with a Redis username: expected an error, got nil")
+	}
+}
+
+func TestApp_CreateProfile_RedisRejectsRequestedDBName(t *testing.T) {
+	a := newTestApp(t)
+
+	if _, err := a.CreateProfile("redis-dbname", []ServiceRequest{
+		{Engine: storage.EngineRedis, DBName: "0"},
+	}); err == nil {
+		t.Error("CreateProfile() with a Redis db name: expected an error, got nil")
+	}
+}
+
+func TestApp_CreateProfile_RedisAcceptsRequestedPassword(t *testing.T) {
+	a := newTestApp(t)
+
+	summary, err := a.CreateProfile("redis-password", []ServiceRequest{
+		{Engine: storage.EngineRedis, Password: "requirepass-me"},
+	})
+	if err != nil {
+		t.Fatalf("CreateProfile failed: %v", err)
+	}
+
+	svc := summary.Services[0]
+	if got := stringOrEmpty(svc.PasswordEncrypted); got != "requirepass-me" {
+		t.Errorf("PasswordEncrypted = %q, want %q", got, "requirepass-me")
+	}
+	if svc.Username != nil {
+		t.Errorf("Username = %v, want nil (Redis has no username concept)", svc.Username)
+	}
+	if svc.DBName != nil {
+		t.Errorf("DBName = %v, want nil (Redis has no upfront database-name concept)", svc.DBName)
+	}
+}
+
+func TestOverrideOrDefault_EmptyRequestedFallsBackToDefault(t *testing.T) {
+	fallback := "fallback-value"
+	if got := overrideOrDefault("", &fallback); got != &fallback {
+		t.Errorf("overrideOrDefault(\"\", &fallback) = %v, want the fallback pointer %v", got, &fallback)
+	}
+}
+
+func TestOverrideOrDefault_EmptyRequestedWithNilFallbackStaysNil(t *testing.T) {
+	if got := overrideOrDefault("", nil); got != nil {
+		t.Errorf("overrideOrDefault(\"\", nil) = %v, want nil", got)
+	}
+}
+
+func TestOverrideOrDefault_NonEmptyRequestedWins(t *testing.T) {
+	fallback := "fallback-value"
+	got := overrideOrDefault("requested-value", &fallback)
+	if got == nil || *got != "requested-value" {
+		t.Errorf("overrideOrDefault(\"requested-value\", &fallback) = %v, want a pointer to %q", got, "requested-value")
+	}
+}
+
 func TestEngineStarters_MapsEachEngineToItsOwnStartFunction(t *testing.T) {
 	want := map[storage.Engine]any{
 		storage.EnginePostgres: (*docker.Client).StartPostgresEnvironment,

@@ -8,6 +8,8 @@ import {
     CloseConnectionSession,
     ExportQueryResultAsCSV,
     ExportQueryResultAsJSON,
+    ExportSchemaAsDrizzle,
+    ExportSchemaAsPrisma,
     ExportTableAsCSV,
     ExportTableAsJSON,
     ExportTableAsSQLDump,
@@ -17,8 +19,9 @@ import {
     RunMultiStatementQuery,
 } from '../../../wailsjs/go/main/App'
 import type {dbengine, main} from '../../../wailsjs/go/models'
+import CreateTableDialog from './CreateTableDialog'
 import ExportControls from './ExportControls'
-import {buildQueryResultExportPayload, describeExportScope, type ExportFormat} from './exportHelpers'
+import {buildQueryResultExportPayload, describeExportOutcome, describeExportScope, type ExportFormat} from './exportHelpers'
 import ImportDialog from './ImportDialog'
 import {collapseStatementResults, summarizeStatementResults} from './multiStatementHelpers'
 import {RESULTS_PAGE_SIZE} from './resultsGridHelpers'
@@ -44,6 +47,8 @@ export interface QueryEditorHandle {
 
 type RunState = 'idle' | 'connecting' | 'running' | 'success' | 'error'
 type SchemaState = 'idle' | 'loading' | 'loaded' | 'error'
+type SchemaExportState = 'idle' | 'exporting' | 'saved' | 'error'
+type SchemaExportTarget = 'prisma' | 'drizzle'
 
 interface SchemaEntry {
     schema: string
@@ -94,6 +99,10 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
     const [browsing, setBrowsing] = useState(false)
 
     const [importTarget, setImportTarget] = useState<{sessionId: string; schema: string; table: dbengine.TableInfo} | null>(null)
+    const [createTableSessionId, setCreateTableSessionId] = useState<string | null>(null)
+
+    const [schemaExportState, setSchemaExportState] = useState<SchemaExportState>('idle')
+    const [schemaExportMessage, setSchemaExportMessage] = useState<string | null>(null)
 
     const sessionIdRef = useRef<string | null>(null)
     const schemaTablesRef = useRef<dbengine.TableInfo[]>([])
@@ -313,6 +322,70 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
     )
 
     /**
+     * "+ New table" (tasks.md 10.2, wired from the same Tables panel
+     * Browse/Import already live in): ensures a live session exists (the
+     * same lazy-connect contract every other per-table action here
+     * follows), then opens CreateTableDialog bound to that session. The
+     * dialog owns the rest of the flow — table name, columns, submit — this
+     * handler's only job is making sure a session exists first.
+     */
+    const handleOpenCreateTable = useCallback(async () => {
+        try {
+            const sessionId = await ensureSession()
+            setCreateTableSessionId(sessionId)
+        } catch (err) {
+            setSchemaError(String(err))
+        }
+    }, [ensureSession])
+
+    /**
+     * After a table is successfully created, reloads the Tables list the
+     * same way "Refresh schema" does (loadSchema), so the new table shows
+     * up immediately without the user having to click Refresh themselves.
+     */
+    const handleTableCreated = useCallback(() => {
+        const sessionId = sessionIdRef.current
+        if (sessionId) {
+            void loadSchema(sessionId)
+        }
+    }, [loadSchema])
+
+    /**
+     * "Export schema" (tasks.md 10.4/10.5, wired from the same Tables panel
+     * every other schema-level action lives in): ensures a live session
+     * exists (the same lazy-connect contract every other action here
+     * follows), then dispatches to whichever ExportSchemaAs* bound method
+     * matches target, targeting schema — the same schema entry's own tables
+     * this Tables panel already lists, not just whichever table is
+     * currently browsed. A cancelled native save dialog (an empty path, see
+     * exportHelpers.describeExportOutcome) is shown as no-op, not an error,
+     * matching ExportControls' own per-table/per-result export outcome
+     * handling.
+     */
+    const handleExportSchema = useCallback(
+        async (schema: string, target: SchemaExportTarget) => {
+            setSchemaExportState('exporting')
+            setSchemaExportMessage(null)
+            try {
+                const sessionId = await ensureSession()
+                const path =
+                    target === 'prisma' ? await ExportSchemaAsPrisma(sessionId, schema) : await ExportSchemaAsDrizzle(sessionId, schema)
+                const outcome = describeExportOutcome(path)
+                if (outcome.status === 'cancelled') {
+                    setSchemaExportState('idle')
+                    return
+                }
+                setSchemaExportState('saved')
+                setSchemaExportMessage(`Saved to ${outcome.path}`)
+            } catch (err) {
+                setSchemaExportState('error')
+                setSchemaExportMessage(String(err))
+            }
+        },
+        [ensureSession],
+    )
+
+    /**
      * After a successful import, refreshes the currently browsed grid only
      * when it is browsing the exact table just imported into — otherwise an
      * import into some other table would pointlessly re-fetch whatever
@@ -396,6 +469,13 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
                     >
                         {schemaState === 'loading' ? 'Loading schema…' : 'Refresh schema'}
                     </button>
+                    <button
+                        type="button"
+                        onClick={() => void handleOpenCreateTable()}
+                        className="rounded border border-ink-700 px-2 py-1 text-xs text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400"
+                    >
+                        + New table
+                    </button>
                     <span className="font-mono text-xs text-ink-500">{fields.Engine}</span>
                 </div>
             </div>
@@ -403,38 +483,68 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
             {schemaEntries.length > 0 && (
                 <div className="flex flex-col gap-1 rounded border border-ink-800 bg-ink-950/40 p-2">
                     <span className="text-[10px] uppercase tracking-widest text-ink-500">Tables</span>
-                    <div className="flex max-h-32 flex-col gap-1 overflow-auto">
-                        {schemaEntries.map((entry) =>
-                            entry.tables.map((table) => (
-                                <div
-                                    key={`${entry.schema}.${table.Name}`}
-                                    className="flex items-center justify-between gap-2 text-xs text-ink-300"
-                                >
-                                    <span className="font-mono">
-                                        {entry.schema}.{table.Name}
-                                    </span>
+                    <div className="flex max-h-48 flex-col gap-2 overflow-auto">
+                        {schemaEntries.map((entry) => (
+                            <div key={entry.schema} className="flex flex-col gap-1">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="font-mono text-[10px] text-ink-500">{entry.schema}</span>
                                     <div className="flex items-center gap-1">
+                                        <span className="text-[10px] uppercase tracking-widest text-ink-600">Export schema</span>
                                         <button
                                             type="button"
-                                            onClick={() => void handleBrowseTable(entry.schema, table)}
-                                            disabled={browsing}
+                                            onClick={() => void handleExportSchema(entry.schema, 'prisma')}
+                                            disabled={schemaExportState === 'exporting'}
                                             className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
-                                            Browse
+                                            Prisma
                                         </button>
                                         <button
                                             type="button"
-                                            onClick={() => void handleOpenImport(entry.schema, table)}
-                                            className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400"
+                                            onClick={() => void handleExportSchema(entry.schema, 'drizzle')}
+                                            disabled={schemaExportState === 'exporting'}
+                                            className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
-                                            Import
+                                            Drizzle
                                         </button>
                                     </div>
                                 </div>
-                            )),
-                        )}
+                                {entry.tables.map((table) => (
+                                    <div
+                                        key={`${entry.schema}.${table.Name}`}
+                                        className="flex items-center justify-between gap-2 text-xs text-ink-300"
+                                    >
+                                        <span className="font-mono">
+                                            {entry.schema}.{table.Name}
+                                        </span>
+                                        <div className="flex items-center gap-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleBrowseTable(entry.schema, table)}
+                                                disabled={browsing}
+                                                className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400 disabled:cursor-not-allowed disabled:opacity-50"
+                                            >
+                                                Browse
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => void handleOpenImport(entry.schema, table)}
+                                                className="rounded border border-ink-700 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:border-brass-500 hover:text-brass-400"
+                                            >
+                                                Import
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ))}
                     </div>
                     {browseError && <span className="text-xs text-red-400">{browseError}</span>}
+                    {schemaExportState === 'saved' && schemaExportMessage && (
+                        <span className="text-xs text-emerald-400">{schemaExportMessage}</span>
+                    )}
+                    {schemaExportState === 'error' && schemaExportMessage && (
+                        <span className="text-xs text-red-400">{schemaExportMessage}</span>
+                    )}
                 </div>
             )}
 
@@ -524,6 +634,15 @@ const QueryEditor = forwardRef<QueryEditorHandle, QueryEditorProps>(function Que
                     table={importTarget.table}
                     onClose={() => setImportTarget(null)}
                     onImported={handleImported}
+                />
+            )}
+
+            {createTableSessionId && (
+                <CreateTableDialog
+                    sessionID={createTableSessionId}
+                    schemas={schemaEntries.map((entry) => entry.schema)}
+                    onClose={() => setCreateTableSessionId(null)}
+                    onCreated={handleTableCreated}
                 />
             )}
         </div>

@@ -6,6 +6,7 @@ import {dbengine} from '../models';
 import {main} from '../models';
 import {storage} from '../models';
 import {time} from '../models';
+import {snippettemplates} from '../models';
 
 export function AddRedisSetMembers(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
 
@@ -41,6 +42,8 @@ export function CreateProfile(arg1:string,arg2:Array<main.ServiceRequest>):Promi
 
 export function CreateSnippet(arg1:string,arg2:storage.Engine,arg3:string,arg4:Array<string>,arg5:any):Promise<storage.Snippet>;
 
+export function CreateTable(arg1:string,arg2:string,arg3:string,arg4:Array<dbengine.ColumnDefinition>):Promise<void>;
+
 export function DeleteConnection(arg1:number):Promise<void>;
 
 export function DeleteMongoDocuments(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
@@ -62,6 +65,10 @@ export function EnsureMigrationsTable(arg1:string):Promise<void>;
 export function ExportQueryResultAsCSV(arg1:Array<string>,arg2:Array<any>):Promise<string>;
 
 export function ExportQueryResultAsJSON(arg1:Array<string>,arg2:Array<any>):Promise<string>;
+
+export function ExportSchemaAsDrizzle(arg1:string,arg2:string):Promise<string>;
+
+export function ExportSchemaAsPrisma(arg1:string,arg2:string):Promise<string>;
 
 export function ExportTableAsCSV(arg1:string,arg2:string,arg3:string):Promise<string>;
 
@@ -112,6 +119,8 @@ export function ListProfiles():Promise<Array<main.ProfileSummary>>;
 export function ListQueryHistory(arg1:storage.QueryHistoryFilter):Promise<Array<storage.QueryHistoryEntry>>;
 
 export function ListSchemasForSession(arg1:string):Promise<Array<string>>;
+
+export function ListSnippetTemplates():Promise<Array<snippettemplates.Template>>;
 
 export function ListSnippets(arg1:main.SnippetFilter):Promise<Array<storage.Snippet>>;
 

@@ -18,6 +18,7 @@ import (
 	"stackyard/internal/diagram"
 	"stackyard/internal/docker"
 	"stackyard/internal/netcheck"
+	"stackyard/internal/snippettemplates"
 	"stackyard/internal/storage"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
@@ -778,14 +779,30 @@ func (a *App) ListProfiles() ([]ProfileSummary, error) {
 // provision within a new profile. HostPort is optional: 0 means "assign this
 // engine's own OS-standard default port" (Postgres 5432, MySQL 3306, MongoDB
 // 27017, Redis 6379), bumped past whatever's already recorded for another
-// Stackyard-managed service — see assignHostPorts. Image tag and credentials
-// are not caller-configurable here; each engine gets the same kind of
-// sensible built-in default CreateProfile has always given Postgres (see
-// defaultsForEngine), consistent with spec.md §3.2's "built-in engine
-// template" 3-click flow.
+// Stackyard-managed service — see assignHostPorts. Image tag is not
+// caller-configurable here; each engine gets the same built-in image tag
+// CreateProfile has always used (see defaultsForEngine), consistent with
+// spec.md §3.2's "built-in engine template" 3-click flow.
+//
+// Username, Password, and DBName are optional custom credentials, each set
+// once at profile-creation time and fixed afterward — CreateProfile has no
+// live-credential-rotation path, since Postgres/MySQL/MongoDB bake these
+// values into the container via environment variables at creation and
+// changing them later would mean recreating the container, likely losing
+// data (tasks.md 10.1, docs/STATE.md Session 22). An empty string means
+// "use this engine's built-in default" (see defaultsForEngine) — the same
+// empty-means-unset convention ConnectionFormFields already uses at this
+// request boundary. Redis has no username or upfront database-name concept
+// (see redis.go's package doc comment): requesting either for a Redis
+// service is rejected by CreateProfile rather than silently ignored.
+// Redis's Password IS honored, since redis.go's --requirepass makes it a
+// real, meaningful setting unlike Username/DBName.
 type ServiceRequest struct {
 	Engine   storage.Engine
 	HostPort int
+	Username string
+	Password string
+	DBName   string
 }
 
 // engineDefaults bundles the per-engine built-in defaults CreateProfile
@@ -907,16 +924,57 @@ func duplicateEngineError(requests []ServiceRequest) error {
 	return nil
 }
 
+// redisCredentialFieldsError reports an error if requests asks a Redis
+// service for a Username or DBName. redis.go's own package doc comment
+// establishes that Redis has neither concept, and neither
+// buildRedisContainerSpec nor RedisConnectionString ever consults either
+// field, so silently accepting a caller's value here would create a false
+// expectation that it took effect — rejecting up front is more honest and
+// debuggable than a value that's quietly dropped. Password is deliberately
+// NOT checked here: Redis authentication is real (buildRedisContainerSpec's
+// `--requirepass`), so a requested Password is a meaningful override,
+// handled normally by CreateProfile's per-service override logic.
+func redisCredentialFieldsError(requests []ServiceRequest) error {
+	for _, req := range requests {
+		if req.Engine != storage.EngineRedis {
+			continue
+		}
+		if req.Username != "" {
+			return fmt.Errorf("redis service requested a username, but redis has no username concept")
+		}
+		if req.DBName != "" {
+			return fmt.Errorf("redis service requested a database name, but redis has no upfront database-name concept")
+		}
+	}
+	return nil
+}
+
+// overrideOrDefault returns requested as a *string when non-empty — the
+// caller's own explicit choice — falling back to fallback (one of
+// defaultsForEngine's computed defaults) otherwise. This is
+// ServiceRequest's documented empty-means-unset rule, applied once per
+// credential field in CreateProfile's per-service loop.
+func overrideOrDefault(requested string, fallback *string) *string {
+	if requested == "" {
+		return fallback
+	}
+	return &requested
+}
+
 // CreateProfile creates a new profile with one service per entry in
 // services, supporting any combination of 1-4 engines in a single call
 // (spec.md §3.1/§3.2, tasks.md 2.4). Each service gets its engine's built-in
-// image tag and credential defaults (see defaultsForEngine) and a host port
-// resolved by assignHostPorts — either the caller's explicit
-// ServiceRequest.HostPort or that engine's own default port, bumped past
-// anything already recorded for another Stackyard-managed service. This is
-// NOT real port-conflict detection (see CheckProfilePortConflict/
-// SuggestFreePort for that) — it only avoids colliding with another
-// Stackyard-managed profile/service.
+// image tag (see defaultsForEngine) and a host port resolved by
+// assignHostPorts — either the caller's explicit ServiceRequest.HostPort or
+// that engine's own default port, bumped past anything already recorded for
+// another Stackyard-managed service. This is NOT real port-conflict
+// detection (see CheckProfilePortConflict/SuggestFreePort for that) — it
+// only avoids colliding with another Stackyard-managed profile/service.
+//
+// Each service's Username/Password/DBName is the request's own value when
+// provided, falling back to defaultsForEngine's built-in default otherwise
+// (see ServiceRequest's doc comment and overrideOrDefault, tasks.md 10.1) —
+// set once here, fixed afterward.
 func (a *App) CreateProfile(name string, services []ServiceRequest) (*ProfileSummary, error) {
 	db, err := a.requireDB()
 	if err != nil {
@@ -926,6 +984,9 @@ func (a *App) CreateProfile(name string, services []ServiceRequest) (*ProfileSum
 		return nil, fmt.Errorf("create profile %q: at least one service is required", name)
 	}
 	if err := duplicateEngineError(services); err != nil {
+		return nil, fmt.Errorf("create profile %q: %w", name, err)
+	}
+	if err := redisCredentialFieldsError(services); err != nil {
 		return nil, fmt.Errorf("create profile %q: %w", name, err)
 	}
 
@@ -956,9 +1017,9 @@ func (a *App) CreateProfile(name string, services []ServiceRequest) (*ProfileSum
 			Engine:            req.Engine,
 			ImageTag:          defaults.imageTag,
 			HostPort:          ports[i],
-			Username:          defaults.username,
-			PasswordEncrypted: defaults.password,
-			DBName:            defaults.dbName,
+			Username:          overrideOrDefault(req.Username, defaults.username),
+			PasswordEncrypted: overrideOrDefault(req.Password, defaults.password),
+			DBName:            overrideOrDefault(req.DBName, defaults.dbName),
 			VolumeName:        fmt.Sprintf("stackyard-vol-profile-%d-%s", profile.ID, req.Engine),
 		}
 
@@ -2108,6 +2169,19 @@ func (a *App) DeleteSnippet(id int64) error {
 		return fmt.Errorf("delete snippet %d: %w", id, err)
 	}
 	return nil
+}
+
+// ListSnippetTemplates returns Stackyard's built-in gallery of starter SQL
+// templates (tasks.md 10.3), e.g. "Auth: users + sessions + tokens" — a
+// curated, read-only library distinct from the user's own saved snippets
+// above. It needs no database access (snippettemplates.List() is static
+// data compiled into the binary), unlike every other Snippet* method on
+// App, so this deliberately skips requireDB(). The frontend's Template
+// gallery lets a user either load a template's SQL straight into the
+// current tab's editor, or turn it into their own editable snippet via
+// CreateSnippet — ListSnippetTemplates only ever reads, it never writes.
+func (a *App) ListSnippetTemplates() []snippettemplates.Template {
+	return snippettemplates.List()
 }
 
 // recordQueryHistory persists one RunQuery execution to query_history
