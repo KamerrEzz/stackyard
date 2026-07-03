@@ -1,4 +1,4 @@
-export type ViewKey = 'environments' | 'db-client' | 'status' | 'schema-diagram'
+export type ViewKey = 'environments' | 'db-client' | 'status' | 'schema-diagram' | 'migrations'
 
 interface NavItem {
     key: ViewKey
@@ -9,6 +9,7 @@ const NAV_ITEMS: NavItem[] = [
     {key: 'environments', label: 'Environments'},
     {key: 'db-client', label: 'DB Client'},
     {key: 'schema-diagram', label: 'Schema Diagram'},
+    {key: 'migrations', label: 'Migrations'},
     {key: 'status', label: 'Status'},
 ]
 

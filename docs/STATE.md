@@ -3015,7 +3015,93 @@ ADDITION to the existing `9990\d\d` test-ID grep — they are separate
 conventions that must both be checked, not one check standing in for
 the other.**
 
-Phase 8 remaining: task 8.5 (Migrations UI panel — pending/applied
-list, apply/rollback actions, per-connection scoping, plus a
-folder-picker dialog for the migrations folder, since 8.1-8.2's
-`SetConnectionMigrationsFolder` only takes a raw path string today).
+---
+
+## Session 15 — Phase 8 closes: Migrations UI panel (8.5)
+
+### Integration point: new top-level sidebar module, not a DB Client tab
+
+Migrations are scoped to a saved connection RECORD (`connectionID`),
+not an ad-hoc session the way every other DB Client feature is — there
+is no natural "open a new migrations tab" the way SQL/Mongo/Redis
+browsing has. `MigrationsView.tsx` got its own sidebar nav item
+(mirroring Schema Diagram's precedent), listing only saved Postgres/
+MySQL connections (Mongo/Redis rows filtered out client-side entirely,
+not merely disabled).
+
+### Folder picker
+
+`PickMigrationsFolder` wraps `wailsruntime.OpenDirectoryDialog`, sibling
+to Session 12's `PickImportFile`/`saveExportFile` — same
+empty-string-means-cancelled convention. Closes the one gap flagged in
+Session 13 (`SetConnectionMigrationsFolder` previously only took a raw
+path string with no OS picker wired to it).
+
+### Pending/applied cross-referencing
+
+One new bound method, `ListAppliedMigrationVersions(sessionID)
+([]int64, error)`, exposes `schema_migrations`'s applied set (only
+computed inside `Apply` before this). A pure, tested frontend function
+(`computeMigrationStatuses`) merges this against `ListMigrations`' file
+list to derive each migration's Applied/Pending status — mirrors
+`PendingMigrations`'s own server-side split rather than duplicating
+that logic differently.
+
+### Rollback confirmation — a deliberate judgment call
+
+spec.md §4.8 doesn't explicitly require confirmation for Rollback (only
+Delete-type operations are called out elsewhere), but a `window.confirm`
+was added anyway, matching this project's established destructive-action
+pattern — reverting a migration is a real, hard-to-undo action against
+a live database schema. Additionally, the Rollback button is only
+ENABLED once `hasAnyAppliedMigration` is true (computed client-side,
+tested) — so the confirm dialog never fires into a dead-end "nothing to
+roll back" state; that `(nil, nil)` case is still handled calmly as a
+defensive fallback if reached some other way, not as an error.
+
+### Manual verification — done for real, including the underlying database
+
+The implementing agent had no Playwright harness available and
+correctly flagged this as a real gap rather than silently skipping it.
+Closed immediately afterward: launched `wails dev`, started a real
+`postgres:16-alpine` container (plain `docker run`), drove the full
+flow via Playwright against `localhost:34115` —
+- Pasted a Postgres URL in DB Client, saved it as a named connection
+  (a real, necessary use of the actual Save-connection flow, since
+  migrations key off a real `connectionID` — cleaned up afterward).
+- Opened the new "Migrations" sidebar module — the saved connection
+  appeared with "No folder configured." Set its folder (via the exposed
+  Wails JS bridge directly, since a native OS folder-picker dialog
+  can't be driven by Playwright/Chromium) — the panel correctly showed
+  the configured path afterward.
+- Created a migration named "create widgets table" — scaffolded exactly
+  as `20260703113107_create_widgets_table.{up,down}.sql` with the
+  documented templated-comment starting content; showed with a
+  `PENDING` badge.
+- Filled in real single-statement SQL (`CREATE TABLE widgets (...)` /
+  `DROP TABLE widgets`), clicked "Apply pending migrations" — showed
+  "Applied: 20260703113107_create_widgets_table" and the badge flipped
+  to `APPLIED`.
+- Clicked "Rollback last migration" — a real confirmation dialog fired
+  ("Roll back the most recently applied migration? This runs its
+  down.sql against the real database and cannot be undone
+  automatically."); accepting it showed "Rolled back
+  20260703113107_create_widgets_table." and the badge flipped back to
+  `PENDING`. The Rollback button then correctly disabled itself (nothing
+  left to roll back).
+- **Verified against the actual database directly** (not just trusting
+  the UI): `\dt` showed only `schema_migrations` remaining (the
+  `widgets` table genuinely dropped by the down-SQL), and `SELECT *
+  FROM schema_migrations` returned 0 rows — the tracking state
+  genuinely matches what the UI displayed.
+- Cleaned up: container removed, `wails dev` process tree killed, the
+  real saved-connection row deleted from the actual app-data SQLite DB
+  via a throwaway `cmd/` program (confirmed 0 connections remaining
+  afterward), scratch migrations folder removed, `pnpm run build`
+  re-run to restore `dist/` after killing `wails dev` (the same
+  established quirk from Sessions 9/11).
+
+**Phase 8 (Migrations, tasks 8.1-8.5) is now fully implemented and
+manually verified end-to-end, including direct confirmation against the
+real target database** — not just the UI's own reporting. Next: Phase 9
+(Polish & Ship v1), the final phase.

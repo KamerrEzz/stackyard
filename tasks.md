@@ -163,7 +163,7 @@ code surface with the editable-grid work above.
       mid-run failure leaves tracking state accurate and surfaces the DB
       error.
 - [x] **8.4** "Rollback": revert exactly one migration step.
-- [ ] **8.5** Migrations UI panel: pending/applied list, apply/rollback
+- [x] **8.5** Migrations UI panel: pending/applied list, apply/rollback
       actions, per-connection scoping.
 
 ## Phase 9 — Polish & Ship v1

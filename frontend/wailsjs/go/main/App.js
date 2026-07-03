@@ -10,6 +10,10 @@ export function AddRedisSortedSetMembers(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddRedisSortedSetMembers'](arg1, arg2, arg3);
 }
 
+export function ApplyMigrations(arg1) {
+  return window['go']['main']['App']['ApplyMigrations'](arg1);
+}
+
 export function BrowseTableRows(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['BrowseTableRows'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -54,6 +58,10 @@ export function CountMongoDocuments(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CountMongoDocuments'](arg1, arg2, arg3, arg4);
 }
 
+export function CreateMigrationFile(arg1, arg2) {
+  return window['go']['main']['App']['CreateMigrationFile'](arg1, arg2);
+}
+
 export function CreateProfile(arg1, arg2) {
   return window['go']['main']['App']['CreateProfile'](arg1, arg2);
 }
@@ -92,6 +100,10 @@ export function DeleteTableRows(arg1, arg2, arg3, arg4) {
 
 export function DuplicateProfile(arg1) {
   return window['go']['main']['App']['DuplicateProfile'](arg1);
+}
+
+export function EnsureMigrationsTable(arg1) {
+  return window['go']['main']['App']['EnsureMigrationsTable'](arg1);
 }
 
 export function ExportQueryResultAsCSV(arg1, arg2) {
@@ -166,12 +178,20 @@ export function InsertTableRow(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['InsertTableRow'](arg1, arg2, arg3, arg4);
 }
 
+export function ListAppliedMigrationVersions(arg1) {
+  return window['go']['main']['App']['ListAppliedMigrationVersions'](arg1);
+}
+
 export function ListConnections() {
   return window['go']['main']['App']['ListConnections']();
 }
 
 export function ListForeignKeysForSession(arg1, arg2) {
   return window['go']['main']['App']['ListForeignKeysForSession'](arg1, arg2);
+}
+
+export function ListMigrations(arg1) {
+  return window['go']['main']['App']['ListMigrations'](arg1);
 }
 
 export function ListMongoCollections(arg1, arg2) {
@@ -226,6 +246,10 @@ export function PickImportFile() {
   return window['go']['main']['App']['PickImportFile']();
 }
 
+export function PickMigrationsFolder() {
+  return window['go']['main']['App']['PickMigrationsFolder']();
+}
+
 export function Ping() {
   return window['go']['main']['App']['Ping']();
 }
@@ -258,6 +282,10 @@ export function RestartProfile(arg1) {
   return window['go']['main']['App']['RestartProfile'](arg1);
 }
 
+export function RollbackMigration(arg1) {
+  return window['go']['main']['App']['RollbackMigration'](arg1);
+}
+
 export function RunMultiStatementQuery(arg1, arg2) {
   return window['go']['main']['App']['RunMultiStatementQuery'](arg1, arg2);
 }
@@ -276,6 +304,10 @@ export function SaveConnection(arg1, arg2) {
 
 export function ScanRedisKeys(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ScanRedisKeys'](arg1, arg2, arg3, arg4);
+}
+
+export function SetConnectionMigrationsFolder(arg1, arg2) {
+  return window['go']['main']['App']['SetConnectionMigrationsFolder'](arg1, arg2);
 }
 
 export function SetRedisHash(arg1, arg2, arg3) {

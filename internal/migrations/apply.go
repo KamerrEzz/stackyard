@@ -72,7 +72,7 @@ func Apply(ctx context.Context, engine dbengine.Engine, dialect dbengine.Dialect
 		return nil, fmt.Errorf("migrations: apply: %w", err)
 	}
 
-	applied, err := loadAppliedVersions(ctx, engine)
+	applied, err := LoadAppliedVersions(ctx, engine)
 	if err != nil {
 		return nil, fmt.Errorf("migrations: apply: %w", err)
 	}
@@ -134,9 +134,15 @@ func trackingRowInsertSQL(dialect dbengine.Dialect) string {
 	return `INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`
 }
 
-// loadAppliedVersions reads every version already recorded in
+// LoadAppliedVersions reads every version already recorded in
 // schema_migrations and returns it as a set, ready for PendingMigrations.
-func loadAppliedVersions(ctx context.Context, engine dbengine.Engine) (map[int64]bool, error) {
+// Exported (rather than kept package-private like the rest of this file's
+// helpers) specifically for tasks.md 8.5's migrations panel: the frontend
+// needs to cross-reference ListMigrations' on-disk file list against the
+// applied set to render pending/applied status, which is otherwise not
+// exposed anywhere Apply/Rollback's own control flow needs it as a public
+// return value.
+func LoadAppliedVersions(ctx context.Context, engine dbengine.Engine) (map[int64]bool, error) {
 	result, err := engine.Query(ctx, selectAppliedVersionsSQL)
 	if err != nil {
 		return nil, fmt.Errorf("load applied versions: %w", err)

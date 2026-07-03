@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"stackyard/internal/migrations"
 	"stackyard/internal/storage"
+
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // migrationsOperationTimeout bounds EnsureMigrationsTable's Exec round trip
@@ -22,6 +25,25 @@ const migrationsOperationTimeout = 10 * time.Second
 // "bulk operation" budget rather than migrationsOperationTimeout's 10s
 // budget (sized for EnsureMigrationsTable's single cheap statement).
 const migrationsApplyTimeout = 5 * time.Minute
+
+// PickMigrationsFolder opens the native OS directory-picker dialog (tasks.md
+// 8.5), for the user to choose where a connection's migration files should
+// live on disk. An empty string with a nil error means the user cancelled
+// the dialog — mirroring PickImportFile's (import.go) and saveExportFile's
+// (export.go) own cancellation convention (docs/STATE.md Session 12) —
+// callers should treat that as "nothing changed," not a failure to report.
+// This is the folder-picker Session 13 flagged as not yet wired: the
+// resulting path is handed to SetConnectionMigrationsFolder exactly as if
+// the user had typed it in by hand.
+func (a *App) PickMigrationsFolder() (string, error) {
+	folder, err := wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select a folder for migration files",
+	})
+	if err != nil {
+		return "", fmt.Errorf("pick migrations folder: %w", err)
+	}
+	return folder, nil
+}
 
 // SetConnectionMigrationsFolder points connectionID's saved Connection at
 // folder as its migrations folder (tasks.md 8.1, plan.md §4's "per-
@@ -93,6 +115,44 @@ func (a *App) EnsureMigrationsTable(sessionID string) error {
 		return fmt.Errorf("ensure migrations table: %w", err)
 	}
 	return nil
+}
+
+// ListAppliedMigrationVersions returns every migration version already
+// recorded in schema_migrations inside sessionID's target database, sorted
+// ascending (tasks.md 8.5). ListMigrations reports every migration FILE on
+// disk with no notion of applied/pending state of its own (see that
+// method's doc comment) — the migrations panel combines this method's
+// result with ListMigrations' to compute each migration's applied/pending
+// status, the same PendingMigrations/loadAppliedVersions split
+// migrations.Apply already uses internally. It does not create
+// schema_migrations itself; call EnsureMigrationsTable first if the
+// tracking table may not exist yet. Rejects a Mongo/Redis session the same
+// way ApplyMigrations/RollbackMigration do, since migrations are
+// relational-only (spec.md §4.8).
+func (a *App) ListAppliedMigrationVersions(sessionID string) ([]int64, error) {
+	session, ok := a.getQuerySession(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("list applied migration versions: no open connection session %q", sessionID)
+	}
+
+	if _, err := dialectForEngine(session.engineType); err != nil {
+		return nil, fmt.Errorf("list applied migration versions: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, migrationsOperationTimeout)
+	defer cancel()
+
+	applied, err := migrations.LoadAppliedVersions(ctx, session.engine)
+	if err != nil {
+		return nil, fmt.Errorf("list applied migration versions: %w", err)
+	}
+
+	versions := make([]int64, 0, len(applied))
+	for version := range applied {
+		versions = append(versions, version)
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
+	return versions, nil
 }
 
 // connectionMigrationsFolder resolves connectionID's saved Connection and

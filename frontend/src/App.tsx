@@ -5,12 +5,14 @@ import EnvironmentManagerView from './modules/environment-manager/EnvironmentMan
 import StatusDashboard from './modules/environment-manager/StatusDashboard'
 import DbClientView from './modules/db-client/DbClientView'
 import SchemaDiagramView from './modules/schema-diagram/SchemaDiagramView'
+import MigrationsView from './modules/migrations/MigrationsView'
 
 const VIEW_TITLES: Record<ViewKey, string> = {
     environments: 'Environment Manager',
     'db-client': 'DB Client',
     status: 'Status Dashboard',
     'schema-diagram': 'Schema Diagram',
+    migrations: 'Migrations',
 }
 
 function App() {
@@ -25,6 +27,7 @@ function App() {
                     {activeView === 'environments' && <EnvironmentManagerView/>}
                     {activeView === 'db-client' && <DbClientView/>}
                     {activeView === 'schema-diagram' && <SchemaDiagramView/>}
+                    {activeView === 'migrations' && <MigrationsView/>}
                     {activeView === 'status' && <StatusDashboard/>}
                 </main>
             </div>
