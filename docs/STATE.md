@@ -1911,3 +1911,72 @@ snippets all 0) after all of this session's manual verification.
 genuinely, fully closed** — verified through two full rounds of
 adversarial review, not just the original implementation passing its
 own tests. Next: Phase 5 (MongoDB).
+
+---
+
+## Session 8 — Phase 5 begins: MongoDB Engine (5.1)
+
+### Architectural decision, made deliberately
+
+MongoDB is document-oriented, not the row/column/SQL shape
+`internal/dbengine/engine.go`'s `Engine` interface assumes. Rather than
+force-fitting it, `internal/dbengine/mongo/mongo.go`'s `Engine` type
+does NOT implement `dbengine.Engine` — it has its own surface
+(`ListDatabases`, `ListCollections`, `FindDocuments`/`CountDocuments`
+with real `limit`/`skip` pagination from the start — not the fixed-limit
+mistake task 4.1 had to fix after the fact, `InsertDocument`,
+`UpdateDocument`, `DeleteDocuments`, `SampleDocuments` via `$sample` for
+task 5.6's later use). `app.go` gained a PARALLEL session map
+(`mongoSessions`, its own mutex) rather than unifying with
+`querySessions` into one polymorphic abstraction — mirrors how the
+Schema Diagram feature already opened its own independent session type
+without disrupting the SQL session map. `mongoSession.engine` is typed
+as a small local `mongoEngine` interface (not the concrete type
+directly) specifically so tests can substitute a fake, mirroring
+`query_session_test.go`'s existing pattern.
+
+### BSON→JSON-safe conversion
+
+`convert.go`'s `sanitizeValue`/`sanitizeDocument` recursively convert
+`primitive.ObjectID`→hex string, `DateTime`/`time.Time`→RFC3339Nano,
+`Decimal128`→decimal string, `Binary`→base64, `Regex`→pattern, and
+recurse into `bson.M`/`bson.A` (empirically confirmed via a throwaway
+probe that the driver decodes nested documents/arrays as `bson.M`/
+`bson.A`, not `bson.D`, when the target is `bson.M`). Document `_id`
+crosses the Wails/JSON boundary as a plain hex string end-to-end — no
+separate ID envelope type; `UpdateDocument`/`DeleteDocuments` take the
+same hex string back and convert internally.
+
+### Real bug caught during integration testing
+
+`MongoConnectionString`'s database-path segment doubles as the driver's
+SCRAM `authSource`. Setting `svc.DBName` to a non-admin value while
+authenticating as the `MONGO_INITDB_ROOT_USER` (which only exists in the
+`admin` database) fails auth. Fixed by leaving `DBName` nil for
+container creation (matches `mongodb.go`'s own already-documented
+fallback from Phase 2) while still exercising a separate named database
+for document operations — Mongo creates databases lazily on first
+write, so this works without any container-config change.
+
+### Notes for whoever picks up 5.2-5.6
+
+- `mongo-driver` landed as `v1` per this task's explicit instruction,
+  though the module itself prints a deprecation notice recommending
+  `go.mongodb.org/mongo-driver/v2` — flagging in case a v2 migration is
+  wanted later, not done here.
+- `ConnectionFormFields`/`ParseConnectionURL` (tasks 3.3/3.4) already
+  fully supports `mongodb://` (with/without password, without database,
+  `authSource` param preserved) — confirmed via existing tests, no gap.
+- `TestConnection`/`newTestEngine` still return "not yet supported" for
+  MongoDB — task 5.1 only asked for `OpenMongoConnection` (the tab-open
+  path), not the Test Connection button. A natural, small follow-up, but
+  intentionally out of this task's scope — whoever builds 5.2's
+  connection UI should decide whether Test Connection needs Mongo
+  support too before users can validate a Mongo connection string the
+  same way they can for Postgres/MySQL.
+- No `App` bound method wraps `SampleDocuments` yet — the primitive
+  exists in `mongo.Engine`, ready for task 5.6 to bind when it needs it.
+
+Test ID used: **999021** (port 27019) — next free integration-test ID is
+**999022+**; grep `9990\d\d` across the whole repo before picking, this
+convention has drifted multiple times already this project.

@@ -119,7 +119,7 @@ code surface with the editable-grid work above.
 
 ## Phase 5 — MongoDB
 
-- [ ] **5.1** Implement `Engine` for MongoDB (official `mongo-go-driver`);
+- [x] **5.1** Implement `Engine` for MongoDB (official `mongo-go-driver`);
       map its query model onto the existing tab/connection shell.
 - [ ] **5.2** Document tree/JSON viewer component (expand/collapse nested
       objects and arrays, typed scalar rendering).

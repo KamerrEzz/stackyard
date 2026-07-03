@@ -16,13 +16,19 @@ export function CheckProfilePortConflict(arg1:number):Promise<main.PortConflictI
 
 export function CloseConnectionSession(arg1:string):Promise<void>;
 
+export function CloseMongoSession(arg1:string):Promise<void>;
+
 export function ConnectUsingSavedConnection(arg1:number):Promise<main.ConnectionFormFields>;
+
+export function CountMongoDocuments(arg1:string,arg2:string,arg3:string,arg4:string):Promise<number>;
 
 export function CreateProfile(arg1:string,arg2:Array<main.ServiceRequest>):Promise<main.ProfileSummary>;
 
 export function CreateSnippet(arg1:string,arg2:storage.Engine,arg3:string,arg4:Array<string>,arg5:any):Promise<storage.Snippet>;
 
 export function DeleteConnection(arg1:number):Promise<void>;
+
+export function DeleteMongoDocuments(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
 
 export function DeleteProfile(arg1:number):Promise<void>;
 
@@ -34,15 +40,23 @@ export function DeleteTableRows(arg1:string,arg2:string,arg3:string,arg4:Array<R
 
 export function DuplicateProfile(arg1:number):Promise<main.ProfileSummary>;
 
+export function FindMongoDocuments(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number):Promise<Array<Record<string, any>>>;
+
 export function GetConnectionString(arg1:number):Promise<string>;
 
 export function GetProfileStatus(arg1:number):Promise<string>;
+
+export function InsertMongoDocument(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
 export function InsertTableRow(arg1:string,arg2:string,arg3:string,arg4:Record<string, any>):Promise<Record<string, any>>;
 
 export function ListConnections():Promise<Array<storage.Connection>>;
 
 export function ListForeignKeysForSession(arg1:string,arg2:string):Promise<Array<dbengine.ForeignKey>>;
+
+export function ListMongoCollections(arg1:string,arg2:string):Promise<Array<string>>;
+
+export function ListMongoDatabases(arg1:string):Promise<Array<string>>;
 
 export function ListProfiles():Promise<Array<main.ProfileSummary>>;
 
@@ -55,6 +69,8 @@ export function ListSnippets(arg1:main.SnippetFilter):Promise<Array<storage.Snip
 export function ListTablesForSession(arg1:string,arg2:string):Promise<Array<dbengine.TableInfo>>;
 
 export function OpenConnection(arg1:main.ConnectionFormFields):Promise<string>;
+
+export function OpenMongoConnection(arg1:main.ConnectionFormFields):Promise<string>;
 
 export function ParseConnectionURL(arg1:string):Promise<main.ConnectionFormFields>;
 
@@ -83,6 +99,8 @@ export function StopStatusWatcher():Promise<void>;
 export function SuggestFreePort(arg1:number):Promise<number>;
 
 export function TestConnection(arg1:main.ConnectionFormFields):Promise<void>;
+
+export function UpdateMongoDocument(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 
 export function UpdateSnippet(arg1:number,arg2:string,arg3:storage.Engine,arg4:string,arg5:Array<string>,arg6:any):Promise<storage.Snippet>;
 

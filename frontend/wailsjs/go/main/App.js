@@ -26,8 +26,16 @@ export function CloseConnectionSession(arg1) {
   return window['go']['main']['App']['CloseConnectionSession'](arg1);
 }
 
+export function CloseMongoSession(arg1) {
+  return window['go']['main']['App']['CloseMongoSession'](arg1);
+}
+
 export function ConnectUsingSavedConnection(arg1) {
   return window['go']['main']['App']['ConnectUsingSavedConnection'](arg1);
+}
+
+export function CountMongoDocuments(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['CountMongoDocuments'](arg1, arg2, arg3, arg4);
 }
 
 export function CreateProfile(arg1, arg2) {
@@ -40,6 +48,10 @@ export function CreateSnippet(arg1, arg2, arg3, arg4, arg5) {
 
 export function DeleteConnection(arg1) {
   return window['go']['main']['App']['DeleteConnection'](arg1);
+}
+
+export function DeleteMongoDocuments(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['DeleteMongoDocuments'](arg1, arg2, arg3, arg4);
 }
 
 export function DeleteProfile(arg1) {
@@ -62,12 +74,20 @@ export function DuplicateProfile(arg1) {
   return window['go']['main']['App']['DuplicateProfile'](arg1);
 }
 
+export function FindMongoDocuments(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['FindMongoDocuments'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
 export function GetConnectionString(arg1) {
   return window['go']['main']['App']['GetConnectionString'](arg1);
 }
 
 export function GetProfileStatus(arg1) {
   return window['go']['main']['App']['GetProfileStatus'](arg1);
+}
+
+export function InsertMongoDocument(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['InsertMongoDocument'](arg1, arg2, arg3, arg4);
 }
 
 export function InsertTableRow(arg1, arg2, arg3, arg4) {
@@ -80,6 +100,14 @@ export function ListConnections() {
 
 export function ListForeignKeysForSession(arg1, arg2) {
   return window['go']['main']['App']['ListForeignKeysForSession'](arg1, arg2);
+}
+
+export function ListMongoCollections(arg1, arg2) {
+  return window['go']['main']['App']['ListMongoCollections'](arg1, arg2);
+}
+
+export function ListMongoDatabases(arg1) {
+  return window['go']['main']['App']['ListMongoDatabases'](arg1);
 }
 
 export function ListProfiles() {
@@ -104,6 +132,10 @@ export function ListTablesForSession(arg1, arg2) {
 
 export function OpenConnection(arg1) {
   return window['go']['main']['App']['OpenConnection'](arg1);
+}
+
+export function OpenMongoConnection(arg1) {
+  return window['go']['main']['App']['OpenMongoConnection'](arg1);
 }
 
 export function ParseConnectionURL(arg1) {
@@ -160,6 +192,10 @@ export function SuggestFreePort(arg1) {
 
 export function TestConnection(arg1) {
   return window['go']['main']['App']['TestConnection'](arg1);
+}
+
+export function UpdateMongoDocument(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateMongoDocument'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function UpdateSnippet(arg1, arg2, arg3, arg4, arg5, arg6) {

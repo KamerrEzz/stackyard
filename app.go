@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"stackyard/internal/dbengine"
+	dbenginemongo "stackyard/internal/dbengine/mongo"
 	dbenginemysql "stackyard/internal/dbengine/mysql"
 	dbenginepostgres "stackyard/internal/dbengine/postgres"
 	"stackyard/internal/diagram"
@@ -77,6 +78,22 @@ const (
 	// deliberately more generous than openConnectionTimeout/
 	// testConnectionTimeout rather than sharing one of those budgets.
 	schemaIntrospectionTimeout = 10 * time.Second
+
+	// openMongoConnectionTimeout bounds OpenMongoConnection's Connect+Ping
+	// round trip (tasks.md 5.1), the same budget openConnectionTimeout gives
+	// the SQL session equivalent, so opening a Mongo session against an
+	// unreachable host fails fast instead of hanging the UI.
+	openMongoConnectionTimeout = 5 * time.Second
+
+	// mongoOperationTimeout bounds every per-session Mongo bound method
+	// below except OpenMongoConnection itself (ListMongoDatabases,
+	// ListMongoCollections, FindMongoDocuments, CountMongoDocuments,
+	// InsertMongoDocument, UpdateMongoDocument, DeleteMongoDocuments) — a
+	// single generous budget rather than one per method, since none of them
+	// runs a caller-supplied long-lived query the way RunQuery does (there
+	// is no cancellation hook to build for Mongo the way RunQuery/CancelQuery
+	// needed for SQL).
+	mongoOperationTimeout = 10 * time.Second
 )
 
 // App struct is the ONLY surface bound to the frontend — every other package
@@ -117,6 +134,22 @@ type App struct {
 
 	queryCancelsMu sync.Mutex
 	queryCancels   map[string]context.CancelFunc
+
+	// mongoSessions backs OpenMongoConnection/CloseMongoSession and every
+	// ListMongo*/FindMongoDocuments/CountMongoDocuments/InsertMongoDocument/
+	// UpdateMongoDocument/DeleteMongoDocuments bound method (tasks.md 5.1) —
+	// a PARALLEL map to querySessions, deliberately not unified with it.
+	// dbenginemongo.Engine does not implement dbengine.Engine (see its own
+	// package doc comment: MongoDB's document model has no sensible mapping
+	// onto Query(ctx, query string)), so a Mongo session cannot be stored
+	// alongside a SQL querySession's dbengine.Engine value without either
+	// force-fitting Mongo into that interface or making querySession hold an
+	// `any` and type-switch on every access — both worse than one small,
+	// obviously-named second map. This mirrors the Schema Diagram feature's
+	// own precedent (tasks.md 4.5.3+): it already opens its own independent
+	// session rather than folding into querySessions.
+	mongoSessionsMu sync.Mutex
+	mongoSessions   map[string]*mongoSession
 }
 
 // querySession holds one live, connected dbengine.Engine bound to a
@@ -140,6 +173,44 @@ type querySession struct {
 	// dialect information of its own once type-erased behind the interface.
 	engineType storage.Engine
 }
+
+// mongoSession holds one live, connected mongoEngine bound to a generated
+// session ID (see OpenMongoConnection), the Mongo-side counterpart of
+// querySession. It carries no connectionID/engineType: Mongo sessions aren't
+// logged to query_history (that table's schema is SQL-query-shaped, see
+// recordQueryHistory) and there is only one possible engine type once a
+// value lives in this map, unlike querySession's engineType which
+// disambiguates Postgres from MySQL within one shared map.
+type mongoSession struct {
+	engine mongoEngine
+}
+
+// mongoEngine is the subset of *dbenginemongo.Engine's method set
+// mongoSession stores and every Mongo bound method (mongo_session.go) calls
+// through. It is a small interface local to this package, not
+// dbenginemongo.Engine's own concrete type, purely so query_session_test.go's
+// fakeQueryEngine test-double pattern can be mirrored for Mongo: a
+// fakeMongoEngine exercises OpenMongoConnection/CloseMongoSession's session
+// bookkeeping in mongo_session_test.go without a live MongoDB connection.
+// This is NOT dbengine.Engine and does not make dbenginemongo.Engine
+// implement it either — see mongo.go's own package doc comment for why
+// MongoDB gets no relational Engine implementation at all; mongoEngine is a
+// separate, narrower contract scoped to exactly what app.go needs.
+// Connect/Ping are deliberately excluded: OpenMongoConnection calls them on
+// the concrete *dbenginemongo.Engine before ever storing it in a
+// mongoSession, so nothing past that point needs them.
+type mongoEngine interface {
+	Close() error
+	ListDatabases(ctx context.Context) ([]string, error)
+	ListCollections(ctx context.Context, database string) ([]string, error)
+	FindDocuments(ctx context.Context, database, collection string, filter map[string]any, limit, skip int) ([]map[string]any, error)
+	CountDocuments(ctx context.Context, database, collection string, filter map[string]any) (int64, error)
+	InsertDocument(ctx context.Context, database, collection string, doc map[string]any) (map[string]any, error)
+	UpdateDocument(ctx context.Context, database, collection, id string, doc map[string]any) error
+	DeleteDocuments(ctx context.Context, database, collection string, ids []string) error
+}
+
+var _ mongoEngine = (*dbenginemongo.Engine)(nil)
 
 // NewApp creates a new App application struct
 func NewApp() *App {
@@ -176,6 +247,7 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) shutdown(_ context.Context) {
 	a.StopStatusWatcher()
 	a.closeAllQuerySessions()
+	a.closeAllMongoSessions()
 
 	if a.db != nil {
 		_ = a.db.Close()
@@ -227,6 +299,45 @@ func (a *App) deleteQuerySession(id string) (*querySession, bool) {
 	session, ok := a.querySessions[id]
 	if ok {
 		delete(a.querySessions, id)
+	}
+	return session, ok
+}
+
+// closeAllMongoSessions closes every live Mongo session (see
+// OpenMongoConnection), called from shutdown() so a still-open Mongo tab
+// never leaks a connection past app exit — the Mongo-side counterpart of
+// closeAllQuerySessions.
+func (a *App) closeAllMongoSessions() {
+	a.mongoSessionsMu.Lock()
+	defer a.mongoSessionsMu.Unlock()
+	for _, session := range a.mongoSessions {
+		_ = session.engine.Close()
+	}
+	a.mongoSessions = nil
+}
+
+func (a *App) putMongoSession(id string, session *mongoSession) {
+	a.mongoSessionsMu.Lock()
+	defer a.mongoSessionsMu.Unlock()
+	if a.mongoSessions == nil {
+		a.mongoSessions = make(map[string]*mongoSession)
+	}
+	a.mongoSessions[id] = session
+}
+
+func (a *App) getMongoSession(id string) (*mongoSession, bool) {
+	a.mongoSessionsMu.Lock()
+	defer a.mongoSessionsMu.Unlock()
+	session, ok := a.mongoSessions[id]
+	return session, ok
+}
+
+func (a *App) deleteMongoSession(id string) (*mongoSession, bool) {
+	a.mongoSessionsMu.Lock()
+	defer a.mongoSessionsMu.Unlock()
+	session, ok := a.mongoSessions[id]
+	if ok {
+		delete(a.mongoSessions, id)
 	}
 	return session, ok
 }
