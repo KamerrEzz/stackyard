@@ -79,7 +79,7 @@ regardless of whether a task fully closes.
       syntax highlighting; wire "Run query" to `Engine.Query`.
 - [x] **3.7** Read-only results grid rendering query output (types,
       pagination) for both engines.
-- [ ] **3.8** Multi-tab shell: open/close tabs, each bound to one
+- [x] **3.8** Multi-tab shell: open/close tabs, each bound to one
       connection + one editor + one result pane; verify independence
       between tabs (spec.md §4.2).
 

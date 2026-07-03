@@ -9,6 +9,8 @@ import {
 } from '../../../wailsjs/go/main/App'
 import type {main, storage} from '../../../wailsjs/go/models'
 import QueryEditor from './QueryEditor'
+import TabBar from './TabBar'
+import {closeTab, openTab} from './tabState'
 
 type Engine = 'postgres' | 'mysql' | 'mongodb' | 'redis'
 
@@ -28,6 +30,23 @@ const ENGINE_OPTIONS: EngineOption[] = [
 interface ParamRow {
     key: string
     value: string
+}
+
+interface DbClientTab {
+    id: string
+    label: string
+    fields: main.ConnectionFormFields
+}
+
+function labelForFields(fields: main.ConnectionFormFields): string {
+    return `${fields.Engine}@${fields.Host}:${fields.Port}`
+}
+
+let tabIdSequence = 0
+
+function nextTabId(): string {
+    tabIdSequence += 1
+    return `tab-${Date.now()}-${tabIdSequence}`
 }
 
 function paramsToRows(params: Record<string, string> | undefined): ParamRow[] {
@@ -71,8 +90,14 @@ function DbClientView() {
     const [saveState, setSaveState] = useState<TestState>('idle')
     const [saveMessage, setSaveMessage] = useState<string | null>(null)
 
-    const [connectionReady, setConnectionReady] = useState(false)
-    const [connectionEpoch, setConnectionEpoch] = useState(0)
+    const [tabs, setTabs] = useState<DbClientTab[]>([])
+    const [activeTabId, setActiveTabId] = useState<string | null>(null)
+
+    const addTab = useCallback((fields: main.ConnectionFormFields, label: string) => {
+        const tab: DbClientTab = {id: nextTabId(), label, fields}
+        setTabs((prev) => openTab(prev, tab).tabs)
+        setActiveTabId(tab.id)
+    }, [])
 
     const applyParsedFields = useCallback((fields: main.ConnectionFormFields) => {
         setEngine(fields.Engine as Engine)
@@ -156,20 +181,19 @@ function DbClientView() {
     }, [database, engine, host, paramRows, password, port, refreshSavedConnections, saveName, username])
 
     const handleLoadConnection = useCallback(
-        async (id: number) => {
+        async (id: number, name: string) => {
             try {
                 const fields = await ConnectUsingSavedConnection(id)
                 setParseError(null)
                 setPasteValue('')
                 applyParsedFields(fields)
-                setConnectionReady(true)
-                setConnectionEpoch((epoch) => epoch + 1)
+                addTab(fields, name)
                 await refreshSavedConnections()
             } catch (err) {
                 setSavedConnectionsError(String(err))
             }
         },
-        [applyParsedFields, refreshSavedConnections],
+        [addTab, applyParsedFields, refreshSavedConnections],
     )
 
     const handleDeleteConnection = useCallback(
@@ -190,35 +214,38 @@ function DbClientView() {
     const handleTestConnection = useCallback(async () => {
         setTestState('testing')
         setTestMessage(null)
+        const fields: main.ConnectionFormFields = {
+            Engine: engine,
+            Host: host,
+            Port: Number(port) || 0,
+            Username: username,
+            Password: password,
+            Database: database,
+            Params: rowsToParams(paramRows),
+        }
         try {
-            await TestConnection({
-                Engine: engine,
-                Host: host,
-                Port: Number(port) || 0,
-                Username: username,
-                Password: password,
-                Database: database,
-                Params: rowsToParams(paramRows),
-            })
+            await TestConnection(fields)
             setTestState('success')
             setTestMessage('Connected successfully.')
-            setConnectionReady(true)
-            setConnectionEpoch((epoch) => epoch + 1)
+            addTab(fields, labelForFields(fields))
         } catch (err) {
             setTestState('error')
             setTestMessage(String(err))
         }
-    }, [database, engine, host, paramRows, password, port, username])
+    }, [addTab, database, engine, host, paramRows, password, port, username])
 
-    const currentFields: main.ConnectionFormFields = {
-        Engine: engine,
-        Host: host,
-        Port: Number(port) || 0,
-        Username: username,
-        Password: password,
-        Database: database,
-        Params: rowsToParams(paramRows),
-    }
+    const handleNewTab = useCallback(() => {
+        setActiveTabId(null)
+    }, [])
+
+    const handleCloseTab = useCallback(
+        (id: string) => {
+            const result = closeTab(tabs, activeTabId, id)
+            setTabs(result.tabs)
+            setActiveTabId(result.activeTabId)
+        },
+        [activeTabId, tabs],
+    )
 
     return (
         <div className="flex flex-col gap-6">
@@ -430,7 +457,7 @@ function DbClientView() {
                         <div className="flex items-center gap-2">
                             <button
                                 type="button"
-                                onClick={() => void handleLoadConnection(conn.ID)}
+                                onClick={() => void handleLoadConnection(conn.ID, conn.Name)}
                                 className="rounded border border-ink-700 px-3 py-1 text-xs text-ink-200 hover:border-brass-500 hover:text-brass-400"
                             >
                                 Load
@@ -447,7 +474,28 @@ function DbClientView() {
                 ))}
             </div>
 
-            {connectionReady && <QueryEditor key={connectionEpoch} fields={currentFields} />}
+            {tabs.length > 0 && (
+                <div className="flex flex-col gap-3">
+                    <TabBar
+                        tabs={tabs}
+                        activeTabId={activeTabId}
+                        onSelect={setActiveTabId}
+                        onClose={handleCloseTab}
+                        onNewTab={handleNewTab}
+                    />
+                    {tabs.map((tab) => (
+                        <div key={tab.id} className={tab.id === activeTabId ? '' : 'hidden'}>
+                            <QueryEditor fields={tab.fields} />
+                        </div>
+                    ))}
+                    {activeTabId === null && (
+                        <p className="text-sm text-ink-500">
+                            Fill in the connection form above, then Test connection or Load a saved connection to
+                            open a new tab.
+                        </p>
+                    )}
+                </div>
+            )}
         </div>
     )
 }

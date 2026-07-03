@@ -1161,3 +1161,56 @@ Sources checked directly (not recalled from training): `pgx/v5@v5.10.0`
   Next, confirmed "Showing 101-150 of 150 rows" with NULL cells rendered
   in muted italics distinct from `note-N` text. All Docker resources and
   the throwaway `cmd/` programs were removed afterward.
+
+### Multi-tab shell (3.8) — `TabBar.tsx` + `tabState.ts` + `DbClientView.tsx`
+
+- **No Go changes were needed** — task 3.6's session API (`OpenConnection`/
+  `RunQuery`/`CancelQuery`/`CloseConnectionSession`) was already designed
+  with multi-tab independence in mind (every `OpenConnection` call
+  creates its own session, no implicit sharing).
+- **Flagged spec.md/plan.md ambiguity, resolved deliberately, not
+  silently**: spec.md §4.2 says tabs should either persist across app
+  restart (reopened, explicit reconnect) OR be clearly closed-on-exit,
+  "decision made in `plan.md`" — but `plan.md` never actually makes that
+  decision. This task implemented the simpler option: **tabs are
+  closed-on-exit, not persisted**. This matches the in-memory-only
+  session model from task 3.6 (nothing about an open tab is written to
+  SQLite) and avoids inventing an explicit-reconnect flow that
+  tasks.md's own 3.8 acceptance text never mentions (only spec.md
+  §4.2's fuller prose does). **If restart-persisted tabs are wanted
+  later, this is the task to revisit** — it would need session/tab-state
+  serialization and a reconnect UX that doesn't exist anywhere today.
+- **Tab-state approach: mounted-and-hidden, not swapped.** Every open
+  tab's `QueryEditor` stays mounted for its whole life; switching tabs
+  only toggles a `hidden` class on its wrapper `div`, keyed by a stable
+  `tab.id` so React never remounts an existing tab's subtree. This is
+  what actually preserves scroll position and unsaved query text
+  (spec.md §4.2's explicit requirement) — a single swapped-content
+  editor would have needed each tab to serialize/restore Monaco's model
+  state manually. Monaco's existing `automaticLayout: true` handles
+  re-layout when a hidden tab becomes visible again, no extra plumbing
+  needed. Closing a tab is the one case that DOES unmount — which
+  reuses task 3.6's existing `CloseConnectionSession`-on-cleanup-effect
+  exactly, no new leak-prevention logic was written.
+- **Verified for real, not just architected**: two real containers
+  (Postgres 999015, MySQL 999016 — next free per the `9990\d\d`
+  convention), distinct marker tables per tab, drove the actual running
+  app with Playwright: ran a query in tab 1, typed unsaved draft text in
+  tab 1, opened tab 2 against a different engine, ran a different query
+  there, switched back to tab 1 and confirmed both its unsaved draft
+  text AND its earlier result were untouched (checked via `aria-selected`
+  attributes, not just visual screenshot timing — a screenshot taken
+  with zero settle delay after a tab switch showed a ~150ms CSS
+  transition-color lag on the tab highlight, which could look like a
+  bug in a screenshot but wasn't — the underlying React state, checked
+  via `aria-selected`, was correct throughout). Closed tab 2, confirmed
+  tab 1 fully unaffected and no session leak.
+- Tab IDs use a simple module-scoped counter, not `crypto.randomUUID()`
+  — the project's pinned `typescript@4.6.4` DOM lib may not type that
+  API, and real UUID uniqueness wasn't needed within one session.
+
+**Phase 3 (DB Client MVP — Postgres + MySQL) is now fully implemented
+(tasks 3.1-3.8).** Every task was verified against a live Docker Engine,
+not just unit-tested in isolation, and every phase-closing manual
+click-through was performed for real via Playwright against the running
+app — not simulated or assumed.
